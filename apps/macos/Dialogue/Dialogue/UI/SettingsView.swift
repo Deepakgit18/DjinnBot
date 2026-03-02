@@ -194,7 +194,7 @@ struct SettingsView: View {
                         .onChange(of: similarityThreshold) { _, newValue in
                             UserDefaults.standard.set(newValue, forKey: "voiceID_similarityThreshold")
                         }
-                    Text("How closely a voice must match an enrolled speaker to be identified. In Pyannote mode, this compares voice embeddings during and after recording. In Sortformer mode, no embeddings are produced, so this setting has no effect.")
+                    Text("How closely a voice must match an enrolled speaker to be identified. In Pyannote mode, embeddings are compared every chunk. In Sortformer mode, embeddings are extracted after ~3 seconds of speech per speaker using a background Pyannote pass.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -211,7 +211,7 @@ struct SettingsView: View {
                         .onChange(of: clusteringThreshold) { _, newValue in
                             UserDefaults.standard.set(newValue, forKey: "voiceID_clusteringThreshold")
                         }
-                    Text("How aggressively speech segments are grouped into a single speaker during voice enrollment. A lower value merges more segments together; a higher value keeps them separate. In Pyannote mode, this shapes the voice profile built from enrollment clips. In Sortformer mode, enrollment does not use clustering, so this setting has no effect.")
+                    Text("How aggressively speech segments are grouped into a single speaker during voice enrollment and Sortformer embedding extraction. A lower value merges more segments together; a higher value keeps them separate. Used in both modes: during enrollment (Pyannote) and during background embedding extraction (Sortformer).")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }

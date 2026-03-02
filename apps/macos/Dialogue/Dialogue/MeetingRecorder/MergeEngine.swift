@@ -126,13 +126,14 @@ final class MergeEngine: ObservableObject {
         // Wait until enough speech has accumulated
         guard speakerDurations[key, default: 0] >= minDurationForIdentification else { return }
 
+        // Only attempt identification when the segment carries an embedding.
+        // In Sortformer mode, embeddings arrive asynchronously after ~3s of
+        // accumulated speech — earlier segments won't have them yet.
+        // Don't mark as identified until we actually have an embedding to try.
+        guard !segment.embedding.isEmpty else { return }
+
         // Mark as attempted (even if no match, to avoid retrying every segment)
         identifiedSpeakers.insert(key)
-
-        // Use pre-extracted embedding if available (Pyannote mode),
-        // otherwise we'd need audio — but diarization segments don't carry
-        // raw audio, so embedding-based matching is the path here.
-        guard !segment.embedding.isEmpty else { return }
 
         let (userID, similarity) = VoiceID.shared.identifySpeaker(fromEmbedding: segment.embedding)
 
