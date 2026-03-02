@@ -146,13 +146,20 @@ final class MeetingRecorderController: ObservableObject {
         durationTimer?.invalidate()
         durationTimer = nil
 
-        // Flush any remaining unattributed segments before stopping pipelines.
-        // This resolves "Speaker-?" entries via adjacency before diarization
-        // managers are cleaned up.
-        mergeEngine.flushUnattributed()
+        // Stop the merge timer BEFORE pipeline teardown to prevent the 30s
+        // timeout from committing segments as Speaker-? while diarization
+        // is still catching up. The final flush will handle all remaining entries.
+        mergeEngine.stopTimers()
 
-        // Stop audio capture
-        let wavURL = await dualEngine.stop()
+        // Stop audio capture. This forces ASR to emit all final segments
+        // via `finalizeAndFinishThroughEndOfInput()` before pipelines are torn down.
+        let recordingURLs = await dualEngine.stop()
+
+        // Small delay to let final ASR segments propagate.
+        try? await Task.sleep(for: .milliseconds(500))
+
+        // NOW flush — all ASR finals have been emitted and processed.
+        mergeEngine.flushUnattributed()
 
         // Build metadata
         let startDate = recordingStartDate ?? Date()
@@ -160,7 +167,7 @@ final class MeetingRecorderController: ObservableObject {
         let metadata = RecordingMetadata(
             startDate: startDate,
             durationSeconds: recordingDuration,
-            wavFileURL: wavURL,
+            wavFileURL: recordingURLs.mixed,
             detectedApps: detectedMeetingApps.components(separatedBy: ", "),
             speakerCount: uniqueSpeakers.count,
             segmentCount: mergedSegments.count
@@ -178,11 +185,20 @@ final class MeetingRecorderController: ObservableObject {
         let segments = mergedSegments
         let saved = MeetingStore.shared.saveMeeting(
             name: nil,
-            wavSourceURL: wavURL,
+            wavSourceURL: recordingURLs.mixed,
+            localWavSourceURL: recordingURLs.local,
+            remoteWavSourceURL: recordingURLs.remote,
             segments: segments
         )
         if let saved {
             logger.info("Meeting saved to \(saved.folderURL.lastPathComponent)")
+
+            // Run post-recording refinement on per-stream WAVs.
+            // This produces ground-truth speaker profiles from full audio
+            // and re-attributes segments that were wrong or unresolved during live recording.
+            Task {
+                await self.runPostRecordingRefinement(meeting: saved)
+            }
         } else {
             logger.warning("Failed to save meeting to Meetings directory")
         }
@@ -191,6 +207,56 @@ final class MeetingRecorderController: ObservableObject {
         logger.info("Recording stopped. Duration: \(String(format: "%.1f", self.recordingDuration))s, Speakers: \(uniqueSpeakers.count)")
 
         return metadata
+    }
+
+    // MARK: - Post-Recording Refinement
+
+    /// Run offline VBx diarization on per-stream WAVs and re-attribute the transcript.
+    ///
+    /// This runs asynchronously after the meeting is saved. The user sees the live
+    /// transcript immediately; it gets refined in the background with higher accuracy.
+    private func runPostRecordingRefinement(meeting: SavedMeeting) async {
+        let localURL = meeting.localRecordingURL
+        let remoteURL = meeting.remoteRecordingURL
+        let fm = FileManager.default
+
+        let hasLocal = fm.fileExists(atPath: localURL.path)
+        let hasRemote = fm.fileExists(atPath: remoteURL.path)
+
+        guard hasLocal || hasRemote else {
+            logger.info("No per-stream WAVs found; skipping post-recording refinement")
+            return
+        }
+
+        logger.info("Starting post-recording refinement for \(meeting.folderURL.lastPathComponent)")
+
+        do {
+            let refiner = PostRecordingRefiner()
+            let refined = try await refiner.refine(
+                localWavURL: hasLocal ? localURL : nil,
+                remoteWavURL: hasRemote ? remoteURL : nil,
+                liveSegments: mergedSegments
+            )
+
+            // Update the live display
+            mergedSegments = refined
+
+            // Overwrite the saved transcript with the refined version
+            MeetingStore.shared.updateTranscript(for: meeting, segments: refined)
+
+            logger.info("Post-recording refinement complete for \(meeting.folderURL.lastPathComponent)")
+        } catch {
+            logger.warning("Post-recording refinement failed: \(error.localizedDescription)")
+            RefinementProgress.shared.state = .failed(error.localizedDescription)
+
+            // Auto-dismiss error after 10 seconds
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(10))
+                if case .failed = RefinementProgress.shared.state {
+                    RefinementProgress.shared.state = .idle
+                }
+            }
+        }
     }
 
     // MARK: - Helpers

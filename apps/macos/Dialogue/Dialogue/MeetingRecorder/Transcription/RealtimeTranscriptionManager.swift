@@ -2,7 +2,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import OSLog
-import Speech
+@preconcurrency import Speech
 
 /// Manages a single SpeechAnalyzer instance for realtime ASR on one audio stream.
 ///
@@ -139,8 +139,23 @@ actor RealtimeTranscriptionManager {
                     // finalized portion of the audio.
                     let isFinal = range.end <= finTime
 
+                    // Extract per-word timing from the AttributedString runs.
+                    // Each run has an audioTimeRange attribute (CMTimeRange)
+                    // that gives us precise word boundaries.
+                    var wordTimings: [WordTiming] = []
                     if isFinal {
-                        logger.debug("[ASR] FINAL: \"\(text)\" [\(range.start.seconds, format: .fixed(precision: 1))s-\(range.end.seconds, format: .fixed(precision: 1))s]")
+                        for run in result.text.runs {
+                            let runText = String(result.text[run.range].characters)
+                            guard !runText.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+                            if let timeRange = run.audioTimeRange {
+                                wordTimings.append(WordTiming(
+                                    word: runText,
+                                    start: timeRange.start.seconds,
+                                    end: timeRange.end.seconds
+                                ))
+                            }
+                        }
+                        logger.debug("[ASR] FINAL: \"\(text)\" [\(range.start.seconds, format: .fixed(precision: 1))s-\(range.end.seconds, format: .fixed(precision: 1))s] (\(wordTimings.count) word timings)")
                     }
 
                     let segment = ASRSegment(
@@ -148,7 +163,8 @@ actor RealtimeTranscriptionManager {
                         text: text,
                         start: range.start.seconds,
                         end: range.end.seconds,
-                        isFinal: isFinal
+                        isFinal: isFinal,
+                        wordTimings: wordTimings
                     )
                     await MergeEngine.shared.addASR(segment)
                 }

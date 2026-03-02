@@ -58,6 +58,7 @@
 		JJ000003 /* SpeakerProfilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ000013 /* SpeakerProfilesView.swift */; };
 		JJ000004 /* VoiceEnrollmentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ000014 /* VoiceEnrollmentSheet.swift */; };
 		KK000001 /* VoiceID.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK000011 /* VoiceID.swift */; };
+		LL000001 /* PostRecordingRefiner.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL000011 /* PostRecordingRefiner.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -112,6 +113,7 @@
 		JJ000013 /* SpeakerProfilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeakerProfilesView.swift; sourceTree = "<group>"; };
 		JJ000014 /* VoiceEnrollmentSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceEnrollmentSheet.swift; sourceTree = "<group>"; };
 		KK000011 /* VoiceID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceID.swift; sourceTree = "<group>"; };
+		LL000011 /* PostRecordingRefiner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostRecordingRefiner.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -245,6 +247,7 @@
 				FF000014 /* DualAudioEngine.swift */,
 				FF000015 /* MixedWAVRecorder.swift */,
 				FF000016 /* MergeEngine.swift */,
+				LL000011 /* PostRecordingRefiner.swift */,
 				II000011 /* RecordingToolbarButton.swift */,
 				II000012 /* LiveTranscriptBanner.swift */,
 				HH000011 /* ModelPreloader.swift */,
@@ -458,6 +461,7 @@
 				JJ000003 /* SpeakerProfilesView.swift in Sources */,
 				JJ000004 /* VoiceEnrollmentSheet.swift in Sources */,
 				KK000001 /* VoiceID.swift in Sources */,
+				LL000001 /* PostRecordingRefiner.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

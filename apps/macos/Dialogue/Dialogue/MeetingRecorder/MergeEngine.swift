@@ -106,6 +106,16 @@ final class MergeEngine: ObservableObject {
     /// In-flight extraction tasks (keyed by ASR start time).
     private var pendingExtractions: Set<TimeInterval> = []
 
+    /// Number of extraction attempts per ASR start time. Used to cap retries.
+    private var extractionAttempts: [TimeInterval: Int] = [:]
+
+    /// Maximum number of embedding extraction retries before giving up.
+    private let maxExtractionRetries = 5
+
+    /// Set to true when recording stops and extractors are being torn down.
+    /// Prevents new extraction requests from being enqueued.
+    private var extractionsStopped = false
+
     /// Completed extraction results awaiting consumption.
     private var completedEmbeddings: [TimeInterval: [Float]] = [:]
 
@@ -158,6 +168,28 @@ final class MergeEngine: ObservableObject {
         attemptVoiceIdentification(for: segment)
 
         scheduleMerge()
+    }
+
+    /// Add a batch of diarization segments in a single MainActor hop.
+    /// Called by RealtimeDiarizationManager to avoid N separate MainActor
+    /// hops per Pyannote chunk (which causes diarization lag).
+    func addBatch(_ segments: [TaggedSegment]) {
+        for segment in segments {
+            var seg = segment
+            if let rename = speakerRenames[seg.speaker] {
+                seg.speaker = rename
+            }
+            diarizationSegments.append(seg)
+
+            updateRegistry(speaker: seg.speaker, stream: seg.stream,
+                           embedding: seg.embedding, duration: seg.duration)
+
+            attemptVoiceIdentification(for: segment)
+        }
+
+        if !segments.isEmpty {
+            scheduleMerge()
+        }
     }
 
     func addASR(_ segment: ASRSegment) {
@@ -331,7 +363,8 @@ final class MergeEngine: ObservableObject {
                     let resolved = TaggedSegment(
                         stream: entry.asr.stream, speaker: speaker.name,
                         start: entry.asr.start, end: entry.asr.end,
-                        text: entry.asr.text, embedding: embedding, isFinal: true
+                        text: entry.asr.text, embedding: embedding, isFinal: true,
+                        wordTimings: entry.asr.wordTimings
                     )
                     diarizationSegments.append(resolved)
                     updateRegistry(speaker: speaker.name, stream: entry.asr.stream,
@@ -361,7 +394,8 @@ final class MergeEngine: ObservableObject {
                 let fallback = TaggedSegment(
                     stream: entry.asr.stream, speaker: "Speaker-?",
                     start: entry.asr.start, end: entry.asr.end,
-                    text: entry.asr.text, isFinal: true
+                    text: entry.asr.text, isFinal: true,
+                    wordTimings: entry.asr.wordTimings
                 )
                 diarizationSegments.append(fallback)
                 continue
@@ -390,7 +424,8 @@ final class MergeEngine: ObservableObject {
                 let fallback = TaggedSegment(
                     stream: asr.stream, speaker: fallbackSpeaker,
                     start: asr.start, end: asr.end,
-                    text: asr.text, isFinal: true
+                    text: asr.text, isFinal: true,
+                    wordTimings: asr.wordTimings
                 )
                 diarizationSegments.append(fallback)
                 logger.info("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] → '\(fallbackSpeaker)' (Sortformer nearest): \"\(asr.text)\"")
@@ -421,7 +456,8 @@ final class MergeEngine: ObservableObject {
             let placeholder = TaggedSegment(
                 stream: entry.asr.stream, speaker: "Speaker-?",
                 start: entry.asr.start, end: entry.asr.end,
-                text: entry.asr.text, isFinal: true
+                text: entry.asr.text, isFinal: true,
+                wordTimings: entry.asr.wordTimings
             )
             output.append(placeholder)
         }
@@ -628,7 +664,8 @@ final class MergeEngine: ObservableObject {
                 let seg = TaggedSegment(
                     stream: entry.asr.stream, speaker: speaker,
                     start: asrStart, end: asrEnd,
-                    text: entry.asr.text, isFinal: true
+                    text: entry.asr.text, isFinal: true,
+                    wordTimings: entry.asr.wordTimings
                 )
                 diarizationSegments.append(seg)
                 resolved.append(idx)
@@ -646,7 +683,13 @@ final class MergeEngine: ObservableObject {
 
     private func triggerEmbeddingExtraction(for entry: UnattributedEntry) {
         let key = entry.asr.start
+        guard !extractionsStopped else { return }
         guard !pendingExtractions.contains(key) else { return }
+
+        // Cap retries to avoid infinite retry loops after recording stops.
+        let attempts = extractionAttempts[key, default: 0]
+        guard attempts < maxExtractionRetries else { return }
+        extractionAttempts[key] = attempts + 1
 
         guard #available(macOS 26.0, *),
               let manager = diarizationManagers[entry.asr.stream] else { return }
@@ -662,8 +705,12 @@ final class MergeEngine: ObservableObject {
             self.pendingExtractions.remove(key)
 
             if embedding.isEmpty {
-                // Ring buffer may not have enough audio yet — will retry next cycle
-                self.logger.info("[MERGE] Embedding extraction empty for \(asr.stream.rawValue) [\(String(format: "%.1f", asr.start))s-\(String(format: "%.1f", asr.end))s], will retry")
+                let attempt = self.extractionAttempts[key, default: 0]
+                if attempt >= self.maxExtractionRetries {
+                    self.logger.info("[MERGE] Embedding extraction failed after \(attempt) attempts for \(asr.stream.rawValue) [\(String(format: "%.1f", asr.start))s-\(String(format: "%.1f", asr.end))s]")
+                } else {
+                    self.logger.info("[MERGE] Embedding extraction empty for \(asr.stream.rawValue) [\(String(format: "%.1f", asr.start))s-\(String(format: "%.1f", asr.end))s], will retry (\(attempt)/\(self.maxExtractionRetries))")
+                }
             } else {
                 self.completedEmbeddings[key] = embedding
             }
@@ -686,6 +733,10 @@ final class MergeEngine: ObservableObject {
                 last.end = max(last.end, segment.end)
                 if !segment.text.isEmpty {
                     last.text = last.text.isEmpty ? segment.text : last.text + " " + segment.text
+                }
+                // Merge word timings from collapsed segments
+                if !segment.wordTimings.isEmpty {
+                    last.wordTimings += segment.wordTimings
                 }
                 last.isFinal = segment.isFinal
                 result[result.count - 1] = last
@@ -718,11 +769,13 @@ final class MergeEngine: ObservableObject {
         if diarizationSegments[index].text.isEmpty {
             diarizationSegments[index].text = asr.text
             diarizationSegments[index].isFinal = true
+            diarizationSegments[index].wordTimings = asr.wordTimings
         } else {
             let extra = TaggedSegment(
                 stream: asr.stream, speaker: matched.speaker,
                 start: asr.start, end: asr.end,
-                text: asr.text, embedding: matched.embedding, isFinal: true
+                text: asr.text, embedding: matched.embedding, isFinal: true,
+                wordTimings: asr.wordTimings
             )
             diarizationSegments.append(extra)
         }
@@ -752,8 +805,41 @@ final class MergeEngine: ObservableObject {
 
     // MARK: - Flush (end-of-recording)
 
+    /// Stop the merge and refinement timers immediately.
+    /// Called before pipeline teardown to prevent the 30s timeout from
+    /// committing segments as Speaker-? while diarization still has data to process.
+    func stopTimers() {
+        mergeTimer?.invalidate()
+        mergeTimer = nil
+        refinementTimer?.invalidate()
+        refinementTimer = nil
+    }
+
     /// Final resolution pass before saving the transcript.
+    ///
+    /// Called after all pipelines are stopped (ASR has emitted its final segments).
+    /// Processes remaining deferred ASR finals, unattributed segments, and runs
+    /// a last refinement pass.
     func flushUnattributed() {
+        // Stop new extraction requests — extractors are being torn down.
+        extractionsStopped = true
+
+        // Stop the refinement timer — we'll run one final pass manually.
+        refinementTimer?.invalidate()
+        refinementTimer = nil
+
+        // Process any remaining deferred ASR finals (never got diarization segments).
+        // Move them to unattributed so they can be resolved or committed as Speaker-?.
+        for asr in finalASRBuffer {
+            if let resolved = resolveASR(asr) {
+                commitResolved(asr: asr, match: resolved)
+            } else {
+                let entry = UnattributedEntry(asr: asr, addedAt: Date())
+                unattributedASR.append(entry)
+            }
+        }
+        finalASRBuffer.removeAll()
+
         // Run a final refinement pass with the complete data
         performRefinement()
 
@@ -770,23 +856,29 @@ final class MergeEngine: ObservableObject {
                 let seg = TaggedSegment(
                     stream: entry.asr.stream, speaker: speaker.name,
                     start: entry.asr.start, end: entry.asr.end,
-                    text: entry.asr.text, embedding: embedding, isFinal: true
+                    text: entry.asr.text, embedding: embedding, isFinal: true,
+                    wordTimings: entry.asr.wordTimings
                 )
                 diarizationSegments.append(seg)
             } else if let match = resolveASR(entry.asr) {
                 commitResolved(asr: entry.asr, match: match)
             } else {
-                // Permanent Speaker-?
+                // Permanent Speaker-? — will be resolved by post-recording refinement
+                let ts = String(format: "%.1f", entry.asr.start)
+                let te = String(format: "%.1f", entry.asr.end)
+                logger.info("[MERGE] \(entry.asr.stream.rawValue) [\(ts)s-\(te)s] → 'Speaker-?' (flush): \"\(entry.asr.text)\"")
                 let seg = TaggedSegment(
                     stream: entry.asr.stream, speaker: "Speaker-?",
                     start: entry.asr.start, end: entry.asr.end,
-                    text: entry.asr.text, isFinal: true
+                    text: entry.asr.text, isFinal: true,
+                    wordTimings: entry.asr.wordTimings
                 )
                 diarizationSegments.append(seg)
             }
         }
         unattributedASR.removeAll()
         pendingExtractions.removeAll()
+        extractionAttempts.removeAll()
         completedEmbeddings.removeAll()
 
         buildOutput()
@@ -803,6 +895,8 @@ final class MergeEngine: ObservableObject {
         finalASRBuffer.removeAll()
         unattributedASR.removeAll()
         pendingExtractions.removeAll()
+        extractionAttempts.removeAll()
+        extractionsStopped = false
         completedEmbeddings.removeAll()
         livePartials.removeAll()
         mergedSegments.removeAll()

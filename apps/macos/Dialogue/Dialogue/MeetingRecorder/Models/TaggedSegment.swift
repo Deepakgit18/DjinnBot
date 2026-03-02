@@ -1,5 +1,19 @@
+import CoreMedia
 import Foundation
 import SwiftData
+
+// MARK: - Word Timing
+
+/// A single word (or run of text) with its precise audio time range.
+///
+/// Extracted from `SpeechTranscriber.Result.text` — each `AttributedString.Run`
+/// carries an `audioTimeRange` attribute (`CMTimeRange`). We convert those into
+/// these lightweight structs so they survive the pipeline and can be persisted.
+struct WordTiming: Codable, Sendable {
+    let word: String
+    let start: TimeInterval
+    let end: TimeInterval
+}
 
 // MARK: - Stream Type
 
@@ -24,6 +38,9 @@ struct TaggedSegment: Identifiable, Sendable {
     var text: String
     var embedding: [Float]
     var isFinal: Bool
+    /// Per-word (per-run) timing from ASR. Empty for diarization-only segments
+    /// or when ASR didn't produce word-level timing.
+    var wordTimings: [WordTiming]
 
     init(
         id: UUID = UUID(),
@@ -33,7 +50,8 @@ struct TaggedSegment: Identifiable, Sendable {
         end: TimeInterval,
         text: String = "",
         embedding: [Float] = [],
-        isFinal: Bool = false
+        isFinal: Bool = false,
+        wordTimings: [WordTiming] = []
     ) {
         self.id = id
         self.stream = stream
@@ -43,6 +61,7 @@ struct TaggedSegment: Identifiable, Sendable {
         self.text = text
         self.embedding = embedding
         self.isFinal = isFinal
+        self.wordTimings = wordTimings
     }
 
     var duration: TimeInterval { end - start }
@@ -66,4 +85,6 @@ struct ASRSegment: Sendable {
     let start: TimeInterval
     let end: TimeInterval
     let isFinal: Bool
+    /// Per-word timing extracted from the SpeechTranscriber AttributedString runs.
+    let wordTimings: [WordTiming]
 }

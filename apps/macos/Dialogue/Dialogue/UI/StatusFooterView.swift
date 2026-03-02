@@ -17,12 +17,17 @@ struct StatusFooterView: View {
 @available(macOS 26.0, *)
 private struct StatusFooterContent: View {
     @ObservedObject private var preloader = ModelPreloader.shared
+    @ObservedObject private var refinement = RefinementProgress.shared
 
     var body: some View {
         VStack(spacing: 0) {
             Divider()
             HStack(spacing: 8) {
-                statusContent
+                if refinement.isActive || isRefinementResult {
+                    refinementContent
+                } else {
+                    preloaderContent
+                }
                 Spacer()
             }
             .padding(.horizontal, 16)
@@ -31,8 +36,64 @@ private struct StatusFooterContent: View {
         }
     }
 
+    /// True when refinement just finished (complete or failed) and is still showing.
+    private var isRefinementResult: Bool {
+        switch refinement.state {
+        case .complete, .failed: return true
+        default: return false
+        }
+    }
+
+    // MARK: - Refinement Progress
+
     @ViewBuilder
-    private var statusContent: some View {
+    private var refinementContent: some View {
+        switch refinement.state {
+        case .preparingModels:
+            ProgressView()
+                .controlSize(.small)
+            Text(refinement.description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+        case .processingStream, .reattributing:
+            ProgressView()
+                .controlSize(.small)
+            Text(refinement.description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let fraction = refinement.fraction {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                    .frame(maxWidth: 140)
+            }
+
+        case .complete:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.caption)
+            Text(refinement.description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.yellow)
+                .font(.caption)
+            Text(refinement.description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+        case .idle:
+            EmptyView()
+        }
+    }
+
+    // MARK: - Model Preloader Status
+
+    @ViewBuilder
+    private var preloaderContent: some View {
         switch preloader.state {
         case .idle:
             ProgressView()

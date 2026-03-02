@@ -2,19 +2,29 @@ import AVFoundation
 import Foundation
 import OSLog
 
-/// Records a mixed-down 16 kHz mono WAV file from all audio streams in parallel.
+/// Records a 16 kHz mono WAV file from audio streams.
 ///
-/// Buffers from both mic and meeting pipelines are written sequentially to a
-/// single WAV file via `AVAudioFile`. The output is suitable for archival and
-/// post-hoc re-processing.
+/// Can be used as:
+/// - **Mixed recorder**: receives buffers from both mic and meeting pipelines
+/// - **Per-stream recorder**: receives buffers from a single stream (local or remote)
+///
+/// The output is suitable for archival and post-hoc re-processing (e.g. full
+/// Pyannote diarization for speaker re-attribution).
 actor MixedWAVRecorder {
 
     // MARK: - Properties
 
     private let logger = Logger(subsystem: "bot.djinn.app.dialog", category: "WAVRecorder")
     private var audioFile: AVAudioFile?
-    private var outputURL: URL?
+    private(set) var outputURL: URL?
     private var totalFramesWritten: AVAudioFrameCount = 0
+
+    /// When true, `writeSamples` calls bail immediately. Set by `shutdown()`
+    /// so that hundreds of queued write tasks drain instantly without blocking `stop()`.
+    private var isShutdown = false
+
+    /// Optional filename prefix (e.g. "local", "remote"). When nil, uses "meeting".
+    private let filenamePrefix: String
 
     /// Target format for the output WAV file.
     private let outputFormat = AVAudioFormat(
@@ -23,6 +33,12 @@ actor MixedWAVRecorder {
         channels: 1,
         interleaved: false
     )!
+
+    // MARK: - Init
+
+    init(filenamePrefix: String = "meeting") {
+        self.filenamePrefix = filenamePrefix
+    }
 
     // MARK: - Lifecycle
 
@@ -33,7 +49,7 @@ actor MixedWAVRecorder {
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let filename = "meeting_\(formatter.string(from: Date())).wav"
+        let filename = "\(filenamePrefix)_\(formatter.string(from: Date())).wav"
         let url = recordingsDir.appendingPathComponent(filename)
 
         let settings: [String: Any] = [
@@ -48,6 +64,7 @@ actor MixedWAVRecorder {
         audioFile = try AVAudioFile(forWriting: url, settings: settings)
         outputURL = url
         totalFramesWritten = 0
+        isShutdown = false
         logger.info("WAV recording started: \(url.lastPathComponent)")
     }
 
@@ -71,7 +88,7 @@ actor MixedWAVRecorder {
     /// Reconstructs an `AVAudioPCMBuffer` from the float array inside actor isolation,
     /// avoiding the need to send non-Sendable `AVAudioPCMBuffer` across boundaries.
     func writeSamples(_ samples: [Float]) {
-        guard !samples.isEmpty, let file = audioFile else { return }
+        guard !isShutdown, !samples.isEmpty, let file = audioFile else { return }
         guard let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: AVAudioFrameCount(samples.count)) else { return }
         buffer.frameLength = AVAudioFrameCount(samples.count)
         guard let channelData = buffer.floatChannelData else { return }
@@ -84,6 +101,13 @@ actor MixedWAVRecorder {
         } catch {
             logger.error("WAV write error: \(error.localizedDescription)")
         }
+    }
+
+    /// Signal the recorder to stop accepting new writes.
+    /// Pending `writeSamples` tasks on the actor queue will bail immediately
+    /// instead of writing, allowing `stop()` to run without waiting for a backlog.
+    func shutdown() {
+        isShutdown = true
     }
 
     /// Stop recording and return the file URL.

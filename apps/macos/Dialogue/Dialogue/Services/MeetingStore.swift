@@ -12,7 +12,10 @@ struct SavedMeeting: Identifiable, Hashable {
     let hasTranscript: Bool
 
     var recordingURL: URL { folderURL.appendingPathComponent("recording.wav") }
+    var localRecordingURL: URL { folderURL.appendingPathComponent("local.wav") }
+    var remoteRecordingURL: URL { folderURL.appendingPathComponent("remote.wav") }
     var transcriptURL: URL { folderURL.appendingPathComponent("transcript.json") }
+    var wordTimingsURL: URL { folderURL.appendingPathComponent("word_timings.json") }
 
     func hash(into hasher: inout Hasher) { hasher.combine(folderURL) }
     static func == (lhs: SavedMeeting, rhs: SavedMeeting) -> Bool { lhs.folderURL == rhs.folderURL }
@@ -27,6 +30,18 @@ struct TranscriptEntry: Codable, Identifiable {
     let text: String
     let stream: String       // "Local" or "Remote"
     let isFinal: Bool
+}
+
+/// Per-segment word-level timing data stored in word_timings.json.
+///
+/// Keyed by segment start time + stream to allow correlation with transcript.json
+/// entries. The refiner uses these to split segments at speaker boundaries.
+struct WordTimingEntry: Codable {
+    let segmentStart: TimeInterval
+    let segmentEnd: TimeInterval
+    let stream: String
+    let speaker: String
+    let words: [WordTiming]
 }
 
 /// Manages the ~/Documents/Dialog/Meetings directory.
@@ -60,17 +75,22 @@ final class MeetingStore: ObservableObject {
 
     /// Save a completed meeting recording and transcript to disk.
     ///
-    /// Creates ~/Documents/Dialog/Meetings/{name}/recording.wav and transcript.json
+    /// Creates ~/Documents/Dialog/Meetings/{name}/recording.wav, local.wav,
+    /// remote.wav, and transcript.json.
     ///
     /// - Parameters:
     ///   - name: Optional meeting name. Falls back to a timestamp.
-    ///   - wavSourceURL: The temporary WAV file to move into the meeting folder.
+    ///   - wavSourceURL: The temporary mixed WAV file to move into the meeting folder.
+    ///   - localWavSourceURL: The temporary local (mic) WAV file.
+    ///   - remoteWavSourceURL: The temporary remote (meeting app) WAV file.
     ///   - segments: The transcript segments to serialize.
     /// - Returns: The created SavedMeeting, or nil on failure.
     @discardableResult
     func saveMeeting(
         name: String? = nil,
         wavSourceURL: URL?,
+        localWavSourceURL: URL? = nil,
+        remoteWavSourceURL: URL? = nil,
         segments: [TaggedSegment]
     ) -> SavedMeeting? {
         let folderName = sanitizedFolderName(name)
@@ -79,17 +99,28 @@ final class MeetingStore: ObservableObject {
         do {
             try fileManager.createDirectory(at: meetingFolder, withIntermediateDirectories: true)
 
-            // Move WAV file
+            // Move mixed WAV file
             var hasRecording = false
             if let sourceURL = wavSourceURL, fileManager.fileExists(atPath: sourceURL.path) {
                 let destWAV = meetingFolder.appendingPathComponent("recording.wav")
-                // If the file already exists (shouldn't normally), remove it first
                 if fileManager.fileExists(atPath: destWAV.path) {
                     try fileManager.removeItem(at: destWAV)
                 }
                 try fileManager.moveItem(at: sourceURL, to: destWAV)
                 hasRecording = true
                 logger.info("Saved recording to \(meetingFolder.lastPathComponent)/recording.wav")
+            }
+
+            // Move per-stream WAV files (for post-recording refinement)
+            for (sourceURL, destName) in [(localWavSourceURL, "local.wav"), (remoteWavSourceURL, "remote.wav")] {
+                if let sourceURL, fileManager.fileExists(atPath: sourceURL.path) {
+                    let dest = meetingFolder.appendingPathComponent(destName)
+                    if fileManager.fileExists(atPath: dest.path) {
+                        try fileManager.removeItem(at: dest)
+                    }
+                    try fileManager.moveItem(at: sourceURL, to: dest)
+                    logger.info("Saved \(destName) to \(meetingFolder.lastPathComponent)/\(destName)")
+                }
             }
 
             // Write transcript JSON
@@ -121,6 +152,24 @@ final class MeetingStore: ObservableObject {
                 let txtURL = meetingFolder.appendingPathComponent("transcript.txt")
                 try lines.joined(separator: "\n").write(to: txtURL, atomically: true, encoding: .utf8)
 
+                // Write word-level timings for post-recording refinement
+                let wordTimingEntries = segments.compactMap { seg -> WordTimingEntry? in
+                    guard !seg.wordTimings.isEmpty else { return nil }
+                    return WordTimingEntry(
+                        segmentStart: seg.start,
+                        segmentEnd: seg.end,
+                        stream: seg.stream.rawValue,
+                        speaker: seg.speaker,
+                        words: seg.wordTimings
+                    )
+                }
+                if !wordTimingEntries.isEmpty {
+                    let wtData = try encoder.encode(wordTimingEntries)
+                    let wtURL = meetingFolder.appendingPathComponent("word_timings.json")
+                    try wtData.write(to: wtURL, options: .atomic)
+                    logger.info("Saved word timings for \(wordTimingEntries.count) segments")
+                }
+
                 hasTranscript = true
                 logger.info("Saved transcript with \(segments.count) segments")
             }
@@ -143,6 +192,63 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    // MARK: - Update Transcript
+
+    /// Overwrite a saved meeting's transcript with refined segments.
+    ///
+    /// Called by post-recording refinement after offline diarization
+    /// produces better speaker attribution.
+    func updateTranscript(for meeting: SavedMeeting, segments: [TaggedSegment]) {
+        guard !segments.isEmpty else { return }
+
+        do {
+            let entries = segments.map { seg in
+                TranscriptEntry(
+                    speaker: seg.speaker,
+                    start: seg.start,
+                    end: seg.end,
+                    text: seg.text,
+                    stream: seg.stream.rawValue,
+                    isFinal: seg.isFinal
+                )
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(entries)
+            try data.write(to: meeting.transcriptURL, options: .atomic)
+
+            // Also update word timings
+            let wordTimingEntries = segments.compactMap { seg -> WordTimingEntry? in
+                guard !seg.wordTimings.isEmpty else { return nil }
+                return WordTimingEntry(
+                    segmentStart: seg.start,
+                    segmentEnd: seg.end,
+                    stream: seg.stream.rawValue,
+                    speaker: seg.speaker,
+                    words: seg.wordTimings
+                )
+            }
+            if !wordTimingEntries.isEmpty {
+                let wtData = try encoder.encode(wordTimingEntries)
+                try wtData.write(to: meeting.wordTimingsURL, options: .atomic)
+            }
+
+            // Also update the plain-text version
+            let sortedEntries = entries.sorted { $0.start < $1.start }
+            let lines = sortedEntries.map { entry in
+                let minutes = Int(entry.start) / 60
+                let seconds = Int(entry.start) % 60
+                return String(format: "%d:%02d %@: %@", minutes, seconds, entry.speaker, entry.text)
+            }
+            let txtURL = meeting.folderURL.appendingPathComponent("transcript.txt")
+            try lines.joined(separator: "\n").write(to: txtURL, atomically: true, encoding: .utf8)
+
+            logger.info("Updated transcript with \(segments.count) refined segments")
+        } catch {
+            logger.warning("Failed to update transcript: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Load Transcript
 
     /// Load transcript entries from a saved meeting's transcript.json.
@@ -151,6 +257,14 @@ final class MeetingStore: ObservableObject {
         guard fileManager.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode([TranscriptEntry].self, from: data)
+    }
+
+    /// Load word-level timing data from a saved meeting's word_timings.json.
+    func loadWordTimings(for meeting: SavedMeeting) -> [WordTimingEntry]? {
+        let url = meeting.wordTimingsURL
+        guard fileManager.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode([WordTimingEntry].self, from: data)
     }
 
     // MARK: - Refresh / Scan

@@ -542,10 +542,11 @@ actor RealtimeDiarizationManager {
                 // Deduplicate: overlapping sliding-window chunks produce segments
                 // for the same time range. Only emit segments that start in the
                 // "fresh" (non-overlapping) portion of this chunk.
-                for segment in segments {
-                    if isFirstDiarChunk || segment.start >= lastEmittedTime {
-                        await MergeEngine.shared.add(segment)
-                    }
+                // Deliver as a batch in a single MainActor hop to avoid
+                // diarization stalls from MainActor contention.
+                let newSegments = segments.filter { isFirstDiarChunk || $0.start >= lastEmittedTime }
+                if !newSegments.isEmpty {
+                    await MergeEngine.shared.addBatch(newSegments)
                 }
 
                 isFirstDiarChunk = false

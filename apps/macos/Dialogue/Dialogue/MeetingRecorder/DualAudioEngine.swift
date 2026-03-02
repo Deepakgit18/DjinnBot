@@ -23,7 +23,9 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
     // MARK: - Properties
 
     private let audioEngine = AVAudioEngine()
-    private let mixedRecorder = MixedWAVRecorder()
+    private let mixedRecorder = MixedWAVRecorder(filenamePrefix: "meeting")
+    private let localRecorder = MixedWAVRecorder(filenamePrefix: "local")
+    private let remoteRecorder = MixedWAVRecorder(filenamePrefix: "remote")
     private var micPipeline: RealtimePipeline?
     private var meetingPipeline: RealtimePipeline?
     private var scStream: SCStream?
@@ -68,8 +70,12 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
             }
         }
 
-        // Start WAV recorder
+        // Start WAV recorders (mixed + per-stream)
         try await mixedRecorder.start()
+        try await localRecorder.start()
+        if meetingPipeline != nil {
+            try await remoteRecorder.start()
+        }
 
         // Install mic tap and start engine
         if micEnabled {
@@ -140,22 +146,27 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
 
     // MARK: - Audio Buffer Handling
 
-    /// Process a microphone buffer: feed to mic pipeline + mixed WAV recorder.
+    /// Process a microphone buffer: feed to mic pipeline + WAV recorders.
     private func handleMicBuffer(_ buffer: AVAudioPCMBuffer) {
         let time = TimelineManager.shared.currentAudioTime()
         TimelineManager.shared.advance(bySamples: buffer.frameLength)
 
         micPipeline?.processBuffer(buffer, at: time)
 
-        // Write to WAV recorder. We deep-copy and use nonisolated(unsafe)
-        // because AVAudioPCMBuffer is not Sendable but our copy is exclusively owned.
-        let recorder = self.mixedRecorder
+        // Write to WAV recorders (mixed + local). We deep-copy and use
+        // nonisolated(unsafe) because AVAudioPCMBuffer is not Sendable
+        // but our copy is exclusively owned.
+        let mixed = self.mixedRecorder
+        let local = self.localRecorder
         if let wavSamples = MeetingAudioConverter.toFloatArray(buffer) as [Float]? {
-            Task { await recorder.writeSamples(wavSamples) }
+            Task {
+                await mixed.writeSamples(wavSamples)
+                await local.writeSamples(wavSamples)
+            }
         }
     }
 
-    /// Process a meeting app audio buffer: feed to meeting pipeline + mixed WAV recorder.
+    /// Process a meeting app audio buffer: feed to meeting pipeline + WAV recorders.
     private func handleMeetingBuffer(_ buffer: AVAudioPCMBuffer) {
         let time = TimelineManager.shared.currentAudioTime()
         if micPipeline == nil {
@@ -164,39 +175,63 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
 
         meetingPipeline?.processBuffer(buffer, at: time)
 
-        let recorder = self.mixedRecorder
+        let mixed = self.mixedRecorder
+        let remote = self.remoteRecorder
         if let wavSamples = MeetingAudioConverter.toFloatArray(buffer) as [Float]? {
-            Task { await recorder.writeSamples(wavSamples) }
+            Task {
+                await mixed.writeSamples(wavSamples)
+                await remote.writeSamples(wavSamples)
+            }
         }
+    }
+
+    // MARK: - Stop Result
+
+    /// URLs for all recorded WAV files from a session.
+    struct RecordingURLs {
+        /// Mixed (mic + meeting) WAV for playback.
+        let mixed: URL?
+        /// Local microphone-only WAV for post-recording refinement.
+        let local: URL?
+        /// Remote meeting app audio-only WAV for post-recording refinement.
+        let remote: URL?
     }
 
     // MARK: - Stop
 
-    /// Stop all capture and return the recorded WAV file URL.
-    func stop() async -> URL? {
+    /// Stop all capture and return the recorded WAV file URLs.
+    func stop() async -> RecordingURLs {
         logger.info("Stopping DualAudioEngine")
 
-        // Stop AVAudioEngine
+        // Stop audio sources FIRST — no new buffers after this.
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
-
-        // Stop ScreenCaptureKit
         if let stream = scStream {
             try? await stream.stopCapture()
             self.scStream = nil
         }
 
-        // Stop pipelines
+        // Signal all WAV recorders to reject pending writes.
+        // This is critical: buffer handlers created hundreds of fire-and-forget
+        // Tasks that are queued on the recorder actors. Without shutdown(),
+        // stop() would have to wait for ALL of them to drain, causing a hang.
+        await mixedRecorder.shutdown()
+        await localRecorder.shutdown()
+        await remoteRecorder.shutdown()
+
+        // Stop pipelines (ASR emits final segments here)
         await micPipeline?.stop()
         await meetingPipeline?.stop()
         micPipeline = nil
         meetingPipeline = nil
         meetingApps = []
 
-        // Stop WAV recorder and get file URL
-        let wavURL = await mixedRecorder.stop()
+        // Now stop WAV recorders — pending writes bail instantly due to shutdown flag.
+        let mixedURL = await mixedRecorder.stop()
+        let localURL = await localRecorder.stop()
+        let remoteURL = await remoteRecorder.stop()
         logger.info("DualAudioEngine stopped")
-        return wavURL
+        return RecordingURLs(mixed: mixedURL, local: localURL, remote: remoteURL)
     }
 }
 
