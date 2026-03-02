@@ -1,6 +1,7 @@
 import SwiftUI
 
 /// A toolbar button for the title bar: red circle when idle, red square when recording.
+/// Shows a spinner when preparing to record.
 /// Tapping toggles recording on/off via the shared MeetingRecorderController.
 @available(macOS 26.0, *)
 struct RecordingToolbarButton: View {
@@ -18,7 +19,12 @@ struct RecordingToolbarButton: View {
             }
         } label: {
             ZStack {
-                if recorder.isRecording {
+                if recorder.isStarting {
+                    // Preparing spinner
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 14, height: 14)
+                } else if recorder.isRecording {
                     // Pulsing glow behind the stop square
                     RoundedRectangle(cornerRadius: 3)
                         .fill(Color.red.opacity(0.3))
@@ -46,7 +52,10 @@ struct RecordingToolbarButton: View {
         }
         .buttonStyle(.plain)
         .disabled(recorder.isStarting || !preloader.state.isReady)
-        .opacity((recorder.isStarting || !preloader.state.isReady) ? 0.4 : 1.0)
-        .help(recorder.isRecording ? "Stop Recording" : "Start Recording")
+        .opacity(!preloader.state.isReady ? 0.4 : 1.0)
+        .help(
+            recorder.isStarting ? "Preparing..." :
+            recorder.isRecording ? "Stop Recording" : "Start Recording"
+        )
     }
 }

@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - StatusFooterView
 
 /// A persistent footer bar at the bottom of the main window.
-/// Shows model download progress during startup and other app-wide status.
+/// Shows model download progress, detected meeting apps, and recording preparation status.
 struct StatusFooterView: View {
     var body: some View {
         if #available(macOS 26.0, *) {
@@ -19,19 +19,15 @@ private struct StatusFooterContent: View {
     @ObservedObject private var preloader = ModelPreloader.shared
 
     var body: some View {
-        // Only show the footer when there is something to display
-        if !preloader.state.isReady {
-            VStack(spacing: 0) {
-                Divider()
-                HStack(spacing: 8) {
-                    statusContent
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-                .background(Color(nsColor: .windowBackgroundColor))
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 8) {
+                statusContent
+                Spacer()
             }
-            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            .background(Color(nsColor: .windowBackgroundColor))
         }
     }
 
@@ -72,7 +68,12 @@ private struct StatusFooterContent: View {
             .font(.caption)
 
         case .ready:
-            EmptyView()
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.caption)
+            Text("Ready")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }

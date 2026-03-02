@@ -50,9 +50,15 @@ struct SidebarView: View {
             )
 
             // MARK: - Meetings Section
-            if !meetingStore.meetings.isEmpty {
-                Divider()
-                meetingsHeader
+            Divider()
+            meetingsHeader
+            if meetingStore.meetings.isEmpty {
+                Text("No meetings yet")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+            } else {
                 MeetingsListView(meetings: meetingStore.meetings, onSelect: onSelectMeeting)
             }
         }
