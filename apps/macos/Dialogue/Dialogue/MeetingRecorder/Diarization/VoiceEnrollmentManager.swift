@@ -1,19 +1,20 @@
 import AVFoundation
-import FluidAudio
 import Foundation
 import OSLog
 
-/// Manages voice enrollment: records a microphone sample, extracts a
-/// speaker embedding via FluidAudio's `DiarizerManager.extractEmbedding()`,
-/// and saves it as a persistent `SpeakerProfile`.
+/// Manages voice enrollment: records 3 microphone clips (~10 seconds each),
+/// extracts embeddings via `VoiceID`, and saves the averaged result as an
+/// enrolled voice.
 ///
 /// Usage:
-/// 1. Call `startRecording()` to begin capturing microphone audio.
-/// 2. Call `stopRecording()` to finish — returns the extracted embedding.
-/// 3. Call `saveProfile(name:embedding:)` to persist.
+/// 1. Call `prepare()` — no model preloading needed (VoiceID owns the runner).
+/// 2. For each of 3 clips:
+///    a. Call `startRecording()` — user reads the displayed prompt.
+///    b. Call `stopRecording()` — clip is stored internally.
+/// 3. After 3 clips, call `saveProfile(name:)` to enroll via VoiceID.
 ///
-/// Minimum recommended recording: 5 seconds (3s absolute minimum).
-/// Best results at 8–10 seconds of clear solo speech.
+/// Minimum recommended recording per clip: 5 seconds (3s absolute minimum).
+/// Best results at 8–10 seconds of clear solo speech per clip.
 @available(macOS 26.0, *)
 @MainActor
 final class VoiceEnrollmentManager: ObservableObject {
@@ -22,7 +23,6 @@ final class VoiceEnrollmentManager: ObservableObject {
 
     enum State: Equatable {
         case idle
-        case preparingModels
         case ready
         case recording(duration: TimeInterval)
         case processing
@@ -34,6 +34,22 @@ final class VoiceEnrollmentManager: ObservableObject {
     @Published private(set) var recordingDuration: TimeInterval = 0
     @Published private(set) var peakLevel: Float = 0
 
+    /// Number of clips recorded so far (0–3).
+    @Published private(set) var clipCount: Int = 0
+
+    /// Total clips required for enrollment.
+    let requiredClipCount: Int = 3
+
+    // MARK: - Reading Prompts
+
+    /// Text prompts for the user to read aloud during each enrollment clip.
+    /// Designed to elicit natural speech with varied phonemes.
+    static let enrollmentPrompts: [String] = [
+        "The quick brown fox jumps over the lazy dog. My voice is my passport, verify me. I enjoy having conversations about all sorts of interesting topics throughout the day.",
+        "She sells seashells by the seashore. The shells she sells are surely seashells. Peter Piper picked a peck of pickled peppers. A peck of pickled peppers Peter Piper picked.",
+        "How much wood would a woodchuck chuck if a woodchuck could chuck wood? A woodchuck would chuck all the wood he could chuck if a woodchuck could chuck wood. That is all.",
+    ]
+
     // MARK: - Private
 
     private let logger = Logger(subsystem: "bot.djinn.app.dialog", category: "VoiceEnrollment")
@@ -41,46 +57,26 @@ final class VoiceEnrollmentManager: ObservableObject {
     private var recordedSamples: [Float] = []
     private var recordingStartDate: Date?
     private var durationTimer: Timer?
-    private var diarizer: DiarizerManager?
 
-    /// Minimum seconds of audio needed for a usable embedding.
+    /// Collected audio clips (16 kHz mono Float32) from each recording round.
+    private var collectedClips: [[Float]] = []
+
+    /// Minimum seconds of audio needed for a usable clip.
     let minimumDuration: TimeInterval = 3.0
-    /// Recommended duration for best results.
-    let recommendedDuration: TimeInterval = 8.0
+    /// Recommended duration per clip for best results.
+    let recommendedDuration: TimeInterval = 10.0
 
     // MARK: - Lifecycle
 
-    /// Prepare the diarizer models for embedding extraction.
-    /// Call once before the first enrollment.
+    /// Prepare for enrollment by ensuring VoiceID's diarizer models
+    /// are loaded for embedding extraction.
     func prepare() async {
-        guard state == .idle || state == .error("") || isErrorState else { return }
-        state = .preparingModels
+        guard state == .idle || isErrorState else { return }
+        collectedClips.removeAll()
+        clipCount = 0
 
         do {
-            // Reuse models from ModelPreloader if available, otherwise download
-            let preloader = ModelPreloader.shared
-            let models: DiarizerModels
-
-            if let preloaded = preloader.diarizerModels {
-                models = preloaded
-            } else {
-                models = try await DiarizerModels.downloadIfNeeded()
-            }
-
-            // Use the same config as recording so embeddings are comparable.
-            // debugMode=true is required for speakerDatabase to be returned.
-            // chunkDuration=10.0 matches the segmentation model's native window.
-            let config = DiarizerConfig(
-                clusteringThreshold: 0.7,
-                minSpeechDuration: 1.0,
-                minSilenceGap: 0.5,
-                debugMode: true,
-                chunkDuration: 10.0
-            )
-            let mgr = DiarizerManager(config: config)
-            mgr.initialize(models: models)
-            self.diarizer = mgr
-
+            try await VoiceID.shared.prepare()
             state = .ready
             logger.info("VoiceEnrollmentManager ready")
         } catch {
@@ -96,9 +92,8 @@ final class VoiceEnrollmentManager: ObservableObject {
 
     // MARK: - Recording
 
-    /// Start capturing microphone audio at 16 kHz mono.
+    /// Start capturing microphone audio at 16 kHz mono for the current clip.
     func startRecording() {
-        // Allow starting from .ready or after a completed enrollment (.done)
         switch state {
         case .ready: break
         case .done: break
@@ -120,11 +115,8 @@ final class VoiceEnrollmentManager: ObservableObject {
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, _ in
             guard let self else { return }
-            // Convert to 16 kHz mono Float32
             guard let converted = MeetingAudioConverter.convertTo16kMono(buffer) else { return }
             let samples = MeetingAudioConverter.toFloatArray(converted)
-
-            // Compute peak for the level meter
             let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
 
             Task { @MainActor in
@@ -149,21 +141,17 @@ final class VoiceEnrollmentManager: ObservableObject {
                 }
             }
 
-            logger.info("Enrollment recording started")
+            logger.info("Enrollment clip \(self.clipCount + 1)/\(self.requiredClipCount) recording started")
         } catch {
             state = .error("Failed to start microphone: \(error.localizedDescription)")
         }
     }
 
-    private var isDoneState: Bool {
-        if case .done = state { return true }
-        return false
-    }
-
-    /// Stop recording and extract the speaker embedding.
+    /// Stop recording the current clip.
     ///
-    /// Returns the 256-d embedding, or nil on failure.
-    func stopRecording() async -> [Float]? {
+    /// Stores the recorded audio internally. Returns `true` if the clip
+    /// was valid and stored, `false` on error.
+    func stopRecording() async -> Bool {
         durationTimer?.invalidate()
         durationTimer = nil
 
@@ -174,79 +162,67 @@ final class VoiceEnrollmentManager: ObservableObject {
 
         guard !recordedSamples.isEmpty else {
             state = .error("No audio recorded")
-            return nil
+            return false
         }
 
         let durationSec = Double(recordedSamples.count) / 16_000.0
         guard durationSec >= minimumDuration else {
             state = .error("Recording too short (\(String(format: "%.1f", durationSec))s). Need at least \(Int(minimumDuration))s.")
-            return nil
-        }
-
-        state = .processing
-        logger.info("Processing enrollment audio: \(String(format: "%.1f", durationSec))s")
-
-        guard let diarizer else {
-            state = .error("Diarizer not initialized")
-            return nil
-        }
-
-        // Run full diarization on the enrollment audio to extract a speaker
-        // embedding. The enrollment clip should contain a single speaker,
-        // so we take the first (and usually only) speaker's embedding from
-        // the result's speakerDatabase.
-        do {
-            let result = try diarizer.performCompleteDiarization(recordedSamples)
-            if let db = result.speakerDatabase, let firstEntry = db.values.first {
-                logger.info("Embedding extracted via diarization: \(firstEntry.count) dimensions")
-                state = .ready
-                return firstEntry
-            }
-
-            // Fallback: get embedding from SpeakerManager
-            let speakers = diarizer.speakerManager.getAllSpeakers()
-            if let firstSpeaker = speakers.values.first {
-                let emb = firstSpeaker.currentEmbedding
-                if !emb.isEmpty {
-                    logger.info("Embedding extracted via SpeakerManager: \(emb.count) dimensions")
-                    state = .ready
-                    return emb
-                }
-            }
-
-            state = .error("No speaker detected in recording. Try speaking louder or longer.")
-            return nil
-        } catch {
-            state = .error("Embedding extraction failed: \(error.localizedDescription)")
-            logger.error("performCompleteDiarization failed: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    /// Save the extracted embedding as a named speaker profile.
-    func saveProfile(name: String, embedding: [Float]) async -> Bool {
-        guard let store = SpeakerProfileStore.shared else {
-            state = .error("Profile store unavailable")
             return false
         }
 
+        // Store the clip
+        collectedClips.append(recordedSamples)
+        clipCount = collectedClips.count
+
+        logger.info("Clip \(self.clipCount)/\(self.requiredClipCount) recorded (\(String(format: "%.1f", durationSec))s)")
+
+        state = .ready
+        return true
+    }
+
+    /// The reading prompt for the current clip (0-indexed from clipCount).
+    var currentPrompt: String {
+        let index = min(clipCount, Self.enrollmentPrompts.count - 1)
+        return Self.enrollmentPrompts[index]
+    }
+
+    /// Whether all required clips have been recorded.
+    var allClipsRecorded: Bool {
+        clipCount >= requiredClipCount
+    }
+
+    // MARK: - Enrollment
+
+    /// Enroll the speaker using all collected audio clips via VoiceID.
+    ///
+    /// Call after all 3 clips have been recorded.
+    ///
+    /// - Parameter name: Display name for the speaker.
+    /// - Returns: `true` if enrollment succeeded.
+    func saveProfile(name: String) async -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             state = .error("Name cannot be empty")
             return false
         }
 
+        guard !collectedClips.isEmpty else {
+            state = .error("No audio clips recorded")
+            return false
+        }
+
+        state = .processing
+
         do {
-            try store.saveOrUpdateProfile(
-                speakerId: trimmedName.lowercased().replacingOccurrences(of: " ", with: "_"),
-                displayName: trimmedName,
-                embedding: embedding
-            )
+            let userID = trimmedName.lowercased().replacingOccurrences(of: " ", with: "_")
+            try await VoiceID.shared.enroll(userID: userID, audioClips: collectedClips)
             state = .done(profileName: trimmedName)
-            logger.info("Saved enrollment profile for '\(trimmedName)'")
+            logger.info("Enrolled '\(trimmedName)' from \(self.collectedClips.count) clips")
             return true
         } catch {
-            state = .error("Failed to save: \(error.localizedDescription)")
+            state = .error("Enrollment failed: \(error.localizedDescription)")
+            logger.error("Enrollment failed: \(error.localizedDescription)")
             return false
         }
     }
@@ -265,11 +241,11 @@ final class VoiceEnrollmentManager: ObservableObject {
         state = .ready
     }
 
-    /// Clean up completely.
+    /// Clean up completely, discarding all collected clips.
     func cleanup() {
         cancel()
-        diarizer?.cleanup()
-        diarizer = nil
+        collectedClips.removeAll()
+        clipCount = 0
         state = .idle
     }
 }

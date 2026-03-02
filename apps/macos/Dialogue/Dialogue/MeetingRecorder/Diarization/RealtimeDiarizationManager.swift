@@ -67,10 +67,6 @@ actor RealtimeDiarizationManager {
     ///
     /// Reads pre-loaded models from `ModelPreloader.shared` when available,
     /// falling back to downloading from HuggingFace (slow path).
-    ///
-    /// For Pyannote mode, also loads known speaker profiles from
-    /// `SpeakerProfileStore` and pre-initialises the `SpeakerManager`
-    /// so returning speakers are recognised immediately.
     func prepare() async throws {
         logger.info("Preparing diarizer for \(self.streamType.rawValue) stream (mode: \(self.mode.rawValue))")
 
@@ -128,38 +124,12 @@ actor RealtimeDiarizationManager {
         let diarizer = DiarizerManager(config: config)
         diarizer.initialize(models: models)
 
-        // Load known speakers from the persistent SpeakerProfileStore
-        // so returning speakers are recognised from the start.
-        await loadKnownSpeakers(into: diarizer)
-
         self.pyannoteManager = diarizer
         sampleBuffer.removeAll()
         bufferStartTime = 0
         isFirstChunk = true
 
         logger.info("PyannoteManager ready for \(self.streamType.rawValue) stream")
-    }
-
-    /// Load known speaker profiles and initialise the DiarizerManager's
-    /// SpeakerManager with them.
-    private func loadKnownSpeakers(into diarizer: DiarizerManager) async {
-        guard let store = SpeakerProfileStore.shared else {
-            logger.info("No SpeakerProfileStore available; skipping known speaker init")
-            return
-        }
-
-        do {
-            let knownSpeakers = try await store.loadAllKnownFluidSpeakers()
-            if !knownSpeakers.isEmpty {
-                diarizer.speakerManager.initializeKnownSpeakers(knownSpeakers)
-                let names = knownSpeakers.map(\.name).joined(separator: ", ")
-                logger.info("Loaded \(knownSpeakers.count) known speakers: \(names)")
-            } else {
-                logger.info("No known speaker profiles to load")
-            }
-        } catch {
-            logger.warning("Failed to load known speakers: \(error.localizedDescription)")
-        }
     }
 
     // MARK: - Streaming Processing
@@ -280,28 +250,6 @@ actor RealtimeDiarizationManager {
         lastEmittedTime = 0
     }
 
-    // MARK: - Extract Speakers (Post-Recording)
-
-    /// Extract all tracked speakers from the Pyannote `SpeakerManager`.
-    ///
-    /// Returns speaker data suitable for saving to `SpeakerProfileStore`.
-    /// Only available in Pyannote mode; Sortformer returns an empty array
-    /// (it has no cross-session speaker embeddings).
-    func extractSpeakers() -> [ExtractedSpeaker] {
-        guard mode == .pyannoteStreaming, let diarizer = pyannoteManager else { return [] }
-
-        let allSpeakers = diarizer.speakerManager.getAllSpeakers()
-        return allSpeakers.compactMap { (id, speaker) -> ExtractedSpeaker? in
-            guard !speaker.currentEmbedding.isEmpty else { return nil }
-            return ExtractedSpeaker(
-                id: id,
-                name: speaker.name,
-                embedding: speaker.currentEmbedding,
-                duration: speaker.duration
-            )
-        }
-    }
-
     // MARK: - Sortformer Conversion
 
     /// Convert Sortformer chunk results (frame-level speaker probabilities)
@@ -420,13 +368,4 @@ actor RealtimeDiarizationManager {
     }
 }
 
-// MARK: - Extracted Speaker Data
 
-/// Lightweight value-type snapshot of a speaker's identity and embedding
-/// extracted post-recording from the `SpeakerManager`.
-struct ExtractedSpeaker: Sendable {
-    let id: String
-    let name: String
-    let embedding: [Float]
-    let duration: Float
-}

@@ -1,12 +1,13 @@
 import SwiftUI
 
-/// Sheet for enrolling a new speaker voice.
+/// Sheet for enrolling a new speaker voice via 3 recording clips.
 ///
 /// Flow:
 /// 1. User enters a name.
-/// 2. Presses "Start Recording" and speaks for 5–10 seconds.
-/// 3. Presses "Stop" — embedding is extracted.
-/// 4. Presses "Save" to persist the profile.
+/// 2. For each of 3 clips, a reading prompt is displayed.
+/// 3. User presses "Start Recording", reads the prompt aloud (~10 seconds).
+/// 4. User presses "Stop" — clip is stored.
+/// 5. After 3 clips, presses "Save" to enroll via VoiceID.
 @available(macOS 26.0, *)
 struct VoiceEnrollmentSheet: View {
 
@@ -17,7 +18,6 @@ struct VoiceEnrollmentSheet: View {
     var onComplete: () -> Void = {}
 
     @State private var speakerName: String = ""
-    @State private var extractedEmbedding: [Float]?
 
     var body: some View {
         VStack(spacing: 20) {
@@ -29,7 +29,7 @@ struct VoiceEnrollmentSheet: View {
                 Text("Enroll Voice")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Record 5-10 seconds of clear speech to create a voice profile.")
+                Text("Record 3 clips of clear speech (~10 seconds each) to create a voice profile.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -42,16 +42,19 @@ struct VoiceEnrollmentSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 300)
 
+            // Progress indicator
+            clipProgressView
+
             // Recording UI
             VStack(spacing: 12) {
                 switch manager.state {
-                case .idle, .preparingModels:
-                    ProgressView("Preparing models...")
+                case .idle:
+                    ProgressView("Preparing...")
                         .controlSize(.small)
 
                 case .ready:
-                    if extractedEmbedding != nil {
-                        extractedState
+                    if manager.allClipsRecorded {
+                        allClipsRecordedState
                     } else {
                         readyState
                     }
@@ -83,15 +86,14 @@ struct VoiceEnrollmentSheet: View {
 
                 Spacer()
 
-                if extractedEmbedding != nil && !speakerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if manager.allClipsRecorded,
+                   !speakerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Button("Save Profile") {
                         Task {
-                            if let emb = extractedEmbedding {
-                                let success = await manager.saveProfile(name: speakerName, embedding: emb)
-                                if success {
-                                    onComplete()
-                                    dismiss()
-                                }
+                            let success = await manager.saveProfile(name: speakerName)
+                            if success {
+                                onComplete()
+                                dismiss()
                             }
                         }
                     }
@@ -101,39 +103,63 @@ struct VoiceEnrollmentSheet: View {
             }
         }
         .padding(24)
-        .frame(width: 400)
+        .frame(width: 440)
         .task {
             await manager.prepare()
         }
         .onDisappear {
-            manager.cancel()
+            manager.cleanup()
+        }
+    }
+
+    // MARK: - Clip Progress
+
+    private var clipProgressView: some View {
+        HStack(spacing: 8) {
+            ForEach(0..<manager.requiredClipCount, id: \.self) { index in
+                Circle()
+                    .fill(index < manager.clipCount ? Color.green : Color.gray.opacity(0.3))
+                    .frame(width: 10, height: 10)
+            }
+            Text("Clip \(min(manager.clipCount + 1, manager.requiredClipCount)) of \(manager.requiredClipCount)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
     // MARK: - State Views
 
-    private var extractedState: some View {
+    private var allClipsRecordedState: some View {
         VStack(spacing: 8) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.title)
                 .foregroundStyle(.green)
-            Text("Voice profile extracted. Click Save Profile below.")
+            Text("All \(manager.requiredClipCount) clips recorded. Click Save Profile below.")
                 .font(.callout)
                 .multilineTextAlignment(.center)
-
-            Button {
-                extractedEmbedding = nil
-                manager.startRecording()
-            } label: {
-                Label("Re-record", systemImage: "arrow.counterclockwise")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
         }
     }
 
     private var readyState: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 12) {
+            // Reading prompt
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Read this aloud:")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.secondary)
+                Text(manager.currentPrompt)
+                    .font(.system(.body, design: .serif))
+                    .italic()
+                    .lineSpacing(4)
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.primary.opacity(0.04))
+                    )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
             levelMeter(level: 0)
 
             Button {
@@ -155,10 +181,21 @@ struct VoiceEnrollmentSheet: View {
 
     private func recordingState(duration: TimeInterval) -> some View {
         VStack(spacing: 8) {
+            // Reading prompt (visible during recording)
+            Text(manager.currentPrompt)
+                .font(.system(.body, design: .serif))
+                .italic()
+                .lineSpacing(4)
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.primary.opacity(0.04))
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+
             levelMeter(level: manager.peakLevel)
 
             HStack(spacing: 12) {
-                // Pulsing red dot
                 Circle()
                     .fill(Color.red)
                     .frame(width: 10, height: 10)
@@ -187,7 +224,7 @@ struct VoiceEnrollmentSheet: View {
 
             Button {
                 Task {
-                    extractedEmbedding = await manager.stopRecording()
+                    _ = await manager.stopRecording()
                 }
             } label: {
                 Label("Stop Recording", systemImage: "stop.fill")
@@ -219,7 +256,6 @@ struct VoiceEnrollmentSheet: View {
                 .multilineTextAlignment(.center)
 
             Button("Try Again") {
-                extractedEmbedding = nil
                 if case .error = manager.state {
                     Task { await manager.prepare() }
                 }

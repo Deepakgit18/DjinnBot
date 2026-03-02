@@ -170,22 +170,6 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
         }
     }
 
-    // MARK: - Speaker Extraction (Post-Recording)
-
-    /// Extract all tracked speakers from both pipelines before stopping.
-    ///
-    /// Must be called **before** `stop()` since stop releases the pipelines.
-    func extractAllSpeakers() async -> [ExtractedSpeaker] {
-        var speakers: [ExtractedSpeaker] = []
-        if let mic = micPipeline {
-            speakers.append(contentsOf: await mic.extractSpeakers())
-        }
-        if let meeting = meetingPipeline {
-            speakers.append(contentsOf: await meeting.extractSpeakers())
-        }
-        return speakers
-    }
-
     // MARK: - Stop
 
     /// Stop all capture and return the recorded WAV file URL.

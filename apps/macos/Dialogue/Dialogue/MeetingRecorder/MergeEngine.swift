@@ -17,14 +17,13 @@ import OSLog
 /// - Finals:  matched to the best-overlapping diarization segment by time,
 ///            giving us speaker-attributed text.
 ///
-/// ## Speaker Profile Matching
+/// ## Speaker Identification
 ///
-/// When running in Pyannote mode, diarization segments carry 256-d embeddings.
-/// The merge engine accumulates per-speaker embeddings in `SpeakerChunkBuffer`.
-/// Once a speaker has accumulated >= 3 seconds of speech, the averaged embedding
-/// is compared against cached profiles (`CachedSpeakerProfile`) loaded at
-/// recording start. A match above `profileMatchThreshold` renames the speaker
-/// in all existing and future segments.
+/// Speaker identification is fully delegated to `VoiceID`. When a diarization
+/// segment carries an embedding, `VoiceID.identifySpeaker(fromEmbedding:)` is
+/// called to resolve auto-generated labels to enrolled user IDs. The merge
+/// engine itself performs no embedding math — it only tracks renames so that
+/// previously-emitted segments are updated retroactively.
 ///
 /// The output `mergedSegments` is sorted by start time for the UI.
 @MainActor
@@ -55,34 +54,25 @@ final class MergeEngine: ObservableObject {
 
     private let logger = Logger(subsystem: "bot.djinn.app.dialog", category: "MergeEngine")
 
-    // MARK: - Speaker Profile Matching
+    // MARK: - VoiceID Speaker Renames
 
-    /// Per-speaker embedding accumulation buffers for progressive profile matching.
-    private var speakerBuffers: [String: SpeakerChunkBuffer] = [:]
-
-    /// Cached profiles loaded at recording start for synchronous matching.
-    private var cachedProfiles: [CachedSpeakerProfile] = []
-
-    /// Speaker label renames discovered via profile matching.
-    /// Key: original auto-generated label, Value: resolved profile name.
+    /// Speaker label renames discovered via VoiceID matching.
+    /// Key: original auto-generated label, Value: resolved enrolled user ID.
     private var speakerRenames: [String: String] = [:]
 
-    /// Cosine similarity threshold for matching a speaker to a cached profile.
-    /// Range 0.65–0.72 recommended (GettingStarted.md).
-    private let profileMatchThreshold: Float = 0.68
+    /// Tracks which auto-generated speaker labels have already been identified
+    /// (or attempted) via VoiceID, to avoid redundant identification calls.
+    private var identifiedSpeakers: Set<String> = []
+
+    /// Minimum accumulated speech duration (seconds) before attempting
+    /// VoiceID identification for a speaker. Ensures enough audio context
+    /// for a reliable match.
+    private let minDurationForIdentification: TimeInterval = 3.0
+
+    /// Per-speaker accumulated speech duration for progressive identification.
+    private var speakerDurations: [String: TimeInterval] = [:]
 
     private init() {}
-
-    // MARK: - Configuration
-
-    /// Load cached speaker profiles for in-memory matching during recording.
-    ///
-    /// Call this at recording start from the controller, after loading
-    /// profiles from `SpeakerProfileStore`.
-    func setCachedProfiles(_ profiles: [CachedSpeakerProfile]) {
-        cachedProfiles = profiles
-        logger.info("Loaded \(profiles.count) cached speaker profiles for matching")
-    }
 
     // MARK: - Ingestion
 
@@ -96,8 +86,8 @@ final class MergeEngine: ObservableObject {
 
         diarizationSegments.append(seg)
 
-        // Update speaker embedding buffer for progressive matching
-        updateSpeakerBuffer(for: segment)
+        // Accumulate duration and attempt VoiceID identification
+        attemptVoiceIdentification(for: segment)
 
         scheduleMerge()
     }
@@ -119,53 +109,42 @@ final class MergeEngine: ObservableObject {
         scheduleMerge()
     }
 
-    // MARK: - Speaker Buffer Accumulation
+    // MARK: - VoiceID Identification
 
-    /// Track per-speaker embedding accumulation for progressive profile matching.
-    private func updateSpeakerBuffer(for segment: TaggedSegment) {
-        // Only accumulate when we have embeddings (Pyannote mode) and cached profiles
-        guard !segment.embedding.isEmpty, !cachedProfiles.isEmpty else { return }
-
+    /// Accumulate speech duration for a speaker and attempt identification
+    /// once enough audio has been collected.
+    private func attemptVoiceIdentification(for segment: TaggedSegment) {
         let key = segment.speaker
-        var buffer = speakerBuffers[key] ?? SpeakerChunkBuffer()
 
-        buffer.totalDuration += segment.duration
+        // Skip if already identified or if VoiceID has no enrolled voices
+        guard !identifiedSpeakers.contains(key),
+              VoiceID.shared.hasEnrolledVoices else { return }
 
-        // Average the new embedding with the cumulative one
-        buffer.cumulativeEmbedding = Self.averageEmbeddings(
-            buffer.cumulativeEmbedding,
-            segment.embedding
-        )
-        buffer.embeddingCount += 1
+        // Accumulate duration
+        speakerDurations[key, default: 0] += segment.duration
 
-        // When enough speech accumulated and not yet matched, attempt profile matching
-        if buffer.totalDuration >= 3.0, !buffer.hasMatched, let avgEmb = buffer.cumulativeEmbedding {
-            if let matchedName = matchAgainstCachedProfiles(embedding: avgEmb) {
-                buffer.hasMatched = true
-                speakerRenames[key] = matchedName
-                // Retroactively rename all existing segments for this speaker
-                renameSpeaker(from: key, to: matchedName)
-                logger.info("Speaker '\(key)' matched to profile '\(matchedName)'")
-            }
+        // Wait until enough speech has accumulated
+        guard speakerDurations[key, default: 0] >= minDurationForIdentification else { return }
+
+        // Mark as attempted (even if no match, to avoid retrying every segment)
+        identifiedSpeakers.insert(key)
+
+        // Use pre-extracted embedding if available (Pyannote mode),
+        // otherwise we'd need audio — but diarization segments don't carry
+        // raw audio, so embedding-based matching is the path here.
+        guard !segment.embedding.isEmpty else { return }
+
+        let (userID, similarity) = VoiceID.shared.identifySpeaker(fromEmbedding: segment.embedding)
+
+        if let userID {
+            speakerRenames[key] = userID
+            renameSpeaker(from: key, to: userID)
+            let sim = String(format: "%.3f", similarity)
+            logger.info("VoiceID: '\(key)' → '\(userID)' (similarity \(sim))")
+        } else {
+            let sim = String(format: "%.3f", similarity)
+            logger.info("VoiceID: '\(key)' unrecognised (best similarity \(sim))")
         }
-
-        speakerBuffers[key] = buffer
-    }
-
-    /// Compare an embedding against all cached profiles and return the best match name.
-    private func matchAgainstCachedProfiles(embedding: [Float]) -> String? {
-        var bestScore: Float = profileMatchThreshold
-        var bestName: String?
-
-        for profile in cachedProfiles {
-            let score = Self.cosineSimilarity(embedding, profile.embedding)
-            if score > bestScore {
-                bestScore = score
-                bestName = profile.name
-            }
-        }
-
-        return bestName
     }
 
     /// Rename all existing segments from one speaker label to another.
@@ -314,34 +293,6 @@ final class MergeEngine: ObservableObject {
         return max(0, overlapEnd - overlapStart)
     }
 
-    /// Cosine similarity between two embedding vectors.
-    ///
-    /// Returns a value in [-1, 1] where 1 = identical direction.
-    /// Assumes L2-normalised 256-d WeSpeaker embeddings.
-    private static func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
-        guard a.count == b.count, !a.isEmpty else { return 0 }
-        var dot: Float = 0
-        var magA: Float = 0
-        var magB: Float = 0
-        for i in a.indices {
-            dot += a[i] * b[i]
-            magA += a[i] * a[i]
-            magB += b[i] * b[i]
-        }
-        let denom = sqrt(magA) * sqrt(magB)
-        return denom > 0 ? dot / denom : 0
-    }
-
-    /// Average two embeddings using exponential weighting (50/50).
-    ///
-    /// If `existing` is nil, returns `new` directly. This naturally gives
-    /// exponentially decaying weight to older embeddings, which is desirable
-    /// for speaker matching as recent speech is more representative.
-    private static func averageEmbeddings(_ existing: [Float]?, _ new: [Float]) -> [Float] {
-        guard let existing, existing.count == new.count else { return new }
-        return zip(existing, new).map { ($0 + $1) / 2.0 }
-    }
-
     /// Reset all state (call when starting a new recording).
     func reset() {
         mergeTimer?.invalidate()
@@ -350,31 +301,8 @@ final class MergeEngine: ObservableObject {
         finalASRBuffer.removeAll()
         livePartials.removeAll()
         mergedSegments.removeAll()
-        speakerBuffers.removeAll()
         speakerRenames.removeAll()
-        // Note: cachedProfiles are NOT cleared here — they persist until
-        // the next recording's setCachedProfiles() call.
+        identifiedSpeakers.removeAll()
+        speakerDurations.removeAll()
     }
-}
-
-// MARK: - Speaker Chunk Buffer
-
-/// Tracks cumulative embedding and speech duration for a single speaker.
-///
-/// Used by `MergeEngine` for progressive profile matching: once a speaker
-/// has >= 3 seconds of speech with embeddings, we compare the averaged
-/// embedding against cached profiles to resolve their identity.
-private struct SpeakerChunkBuffer {
-    /// Running average of all embeddings received for this speaker.
-    var cumulativeEmbedding: [Float]?
-
-    /// Number of embeddings that have been averaged.
-    var embeddingCount: Int = 0
-
-    /// Total speech duration in seconds across all segments.
-    var totalDuration: TimeInterval = 0
-
-    /// Whether this speaker has already been matched to a profile.
-    /// Once matched, no further matching attempts are made.
-    var hasMatched: Bool = false
 }

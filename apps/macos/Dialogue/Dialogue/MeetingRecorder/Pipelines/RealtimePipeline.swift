@@ -141,16 +141,6 @@ final class RealtimePipeline: Sendable {
         return buffer
     }
 
-    // MARK: - Speaker Extraction (Post-Recording)
-
-    /// Extract tracked speakers from the diarization backend for profile saving.
-    ///
-    /// Only produces results in Pyannote mode; Sortformer has no
-    /// cross-session speaker embeddings.
-    func extractSpeakers() async -> [ExtractedSpeaker] {
-        await diarizationManager.extractSpeakers()
-    }
-
     // MARK: - Shutdown
 
     /// Stop both ASR and diarization, releasing all resources.

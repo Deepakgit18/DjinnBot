@@ -1,4 +1,3 @@
-import FluidAudio
 import Foundation
 import SwiftData
 
@@ -122,29 +121,6 @@ actor SpeakerProfileStore {
         return profile
     }
 
-    // MARK: - Load All as FluidAudio Speakers
-
-    /// Load all stored profiles as FluidAudio `Speaker` objects,
-    /// suitable for `SpeakerManager.initializeKnownSpeakers(_:)`.
-    ///
-    /// Returns speakers sorted by most recently seen first.
-    @MainActor
-    func loadAllKnownFluidSpeakers() throws -> [Speaker] {
-        let context = modelContainer.mainContext
-        let descriptor = FetchDescriptor<SpeakerProfile>(
-            sortBy: [SortDescriptor(\.lastSeenDate, order: .reverse)]
-        )
-        let profiles = try context.fetch(descriptor)
-        return profiles.compactMap { profile in
-            guard !profile.embedding.isEmpty else { return nil }
-            return Speaker(
-                id: profile.speakerID,
-                name: profile.displayName,
-                currentEmbedding: profile.embedding
-            )
-        }
-    }
-
     // MARK: - Save / Update from FluidAudio Speaker Data
 
     /// Save or update a profile from post-recording speaker data.
@@ -193,37 +169,4 @@ actor SpeakerProfileStore {
         try context.save()
     }
 
-    // MARK: - Load as Cached Profiles (for MergeEngine)
-
-    /// Load all profiles as lightweight value-type copies for in-memory matching.
-    ///
-    /// Used by `MergeEngine` at recording start to avoid async actor calls
-    /// during real-time segment processing.
-    @MainActor
-    func loadCachedProfiles() throws -> [CachedSpeakerProfile] {
-        let context = modelContainer.mainContext
-        let descriptor = FetchDescriptor<SpeakerProfile>(
-            sortBy: [SortDescriptor(\.lastSeenDate, order: .reverse)]
-        )
-        let profiles = try context.fetch(descriptor)
-        return profiles.compactMap { profile in
-            guard !profile.embedding.isEmpty else { return nil }
-            return CachedSpeakerProfile(
-                speakerId: profile.speakerID,
-                name: profile.displayName,
-                embedding: profile.embedding
-            )
-        }
-    }
-}
-
-// MARK: - Cached Speaker Profile (Value Type)
-
-/// Lightweight, `Sendable` snapshot of a speaker profile for in-memory matching.
-///
-/// Avoids the need to cross actor boundaries during real-time processing.
-struct CachedSpeakerProfile: Sendable {
-    let speakerId: String
-    let name: String
-    let embedding: [Float]
 }

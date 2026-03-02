@@ -58,6 +58,7 @@
 		JJ000002 /* VoiceEnrollmentManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ000012 /* VoiceEnrollmentManager.swift */; };
 		JJ000003 /* SpeakerProfilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ000013 /* SpeakerProfilesView.swift */; };
 		JJ000004 /* VoiceEnrollmentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ000014 /* VoiceEnrollmentSheet.swift */; };
+		KK000001 /* VoiceID.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK000011 /* VoiceID.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -112,6 +113,7 @@
 		JJ000012 /* VoiceEnrollmentManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceEnrollmentManager.swift; sourceTree = "<group>"; };
 		JJ000013 /* SpeakerProfilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeakerProfilesView.swift; sourceTree = "<group>"; };
 		JJ000014 /* VoiceEnrollmentSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceEnrollmentSheet.swift; sourceTree = "<group>"; };
+		KK000011 /* VoiceID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceID.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -273,6 +275,7 @@
 			children = (
 				FF00001B /* RealtimeDiarizationManager.swift */,
 				JJ000012 /* VoiceEnrollmentManager.swift */,
+				KK000011 /* VoiceID.swift */,
 			);
 			path = Diarization;
 			sourceTree = "<group>";
@@ -449,6 +452,7 @@
 				JJ000002 /* VoiceEnrollmentManager.swift in Sources */,
 				JJ000003 /* SpeakerProfilesView.swift in Sources */,
 				JJ000004 /* VoiceEnrollmentSheet.swift in Sources */,
+				KK000001 /* VoiceID.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
