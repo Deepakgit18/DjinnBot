@@ -49,6 +49,12 @@ struct TaggedSegment: Identifiable, Sendable {
 
     /// Display-friendly label combining stream prefix and speaker ID.
     var displayLabel: String { "\(stream.rawValue)-\(speaker)" }
+
+    /// Whether the text contains at least one letter or digit.
+    /// Filters out noise artefacts from ASR (e.g. " .", " ,", whitespace-only).
+    var hasSubstantialContent: Bool {
+        text.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
+    }
 }
 
 // MARK: - ASR Result Wrapper
