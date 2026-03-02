@@ -7,7 +7,9 @@ typealias MicPipeline = RealtimePipeline
 
 extension MicPipeline {
     /// Convenience factory for the mic pipeline.
-    static func createMic() -> RealtimePipeline {
-        RealtimePipeline(streamType: .mic)
+    ///
+    /// - Parameter mode: Diarization backend to use (Sortformer or Pyannote).
+    static func createMic(mode: DiarizationMode = .pyannoteStreaming) -> RealtimePipeline {
+        RealtimePipeline(streamType: .mic, mode: mode)
     }
 }

@@ -39,6 +39,13 @@ struct DialogueApp: App {
                     NotificationCenter.default.post(name: .toggleRecording, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Speaker Profiles...") {
+                    NotificationCenter.default.post(name: .openSpeakerProfiles, object: nil)
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
             }
 
             // Phase 3: AI Chat commands
@@ -65,6 +72,17 @@ struct DialogueApp: App {
         Settings {
             SettingsView()
         }
+
+        // Speaker Profiles window (diarization mode + voice enrollment)
+        Window("Speaker Profiles", id: "speaker-profiles") {
+            if #available(macOS 26.0, *) {
+                SpeakerProfilesView()
+            } else {
+                Text("Speaker Profiles requires macOS 26.0 or later.")
+                    .padding()
+            }
+        }
+        .defaultSize(width: 520, height: 520)
     }
 }
 
@@ -163,4 +181,5 @@ extension Notification.Name {
 
     // Meeting recording
     static let toggleRecording = Notification.Name("dialogue.toggleRecording")
+    static let openSpeakerProfiles = Notification.Name("dialogue.openSpeakerProfiles")
 }

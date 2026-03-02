@@ -54,6 +54,10 @@
 		II000001 /* RecordingToolbarButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = II000011 /* RecordingToolbarButton.swift */; };
 		II000002 /* LiveTranscriptBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = II000012 /* LiveTranscriptBanner.swift */; };
 		II000003 /* CatppuccinColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = II000013 /* CatppuccinColors.swift */; };
+		JJ000001 /* DiarizationMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ000011 /* DiarizationMode.swift */; };
+		JJ000002 /* VoiceEnrollmentManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ000012 /* VoiceEnrollmentManager.swift */; };
+		JJ000003 /* SpeakerProfilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ000013 /* SpeakerProfilesView.swift */; };
+		JJ000004 /* VoiceEnrollmentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ000014 /* VoiceEnrollmentSheet.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -104,6 +108,10 @@
 		II000011 /* RecordingToolbarButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingToolbarButton.swift; sourceTree = "<group>"; };
 		II000012 /* LiveTranscriptBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTranscriptBanner.swift; sourceTree = "<group>"; };
 		II000013 /* CatppuccinColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatppuccinColors.swift; sourceTree = "<group>"; };
+		JJ000011 /* DiarizationMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiarizationMode.swift; sourceTree = "<group>"; };
+		JJ000012 /* VoiceEnrollmentManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceEnrollmentManager.swift; sourceTree = "<group>"; };
+		JJ000013 /* SpeakerProfilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeakerProfilesView.swift; sourceTree = "<group>"; };
+		JJ000014 /* VoiceEnrollmentSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceEnrollmentSheet.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -200,6 +208,8 @@
 				CC00001A /* StatusFooterView.swift */,
 				DD000017 /* BottomEdgeDetector.swift */,
 				GG000012 /* MeetingDetailView.swift */,
+				JJ000013 /* SpeakerProfilesView.swift */,
+				JJ000014 /* VoiceEnrollmentSheet.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
@@ -245,6 +255,7 @@
 				FF000017 /* TaggedSegment.swift */,
 				FF000018 /* SpeakerProfile.swift */,
 				FF000019 /* RecordingMetadata.swift */,
+				JJ000011 /* DiarizationMode.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -261,6 +272,7 @@
 			isa = PBXGroup;
 			children = (
 				FF00001B /* RealtimeDiarizationManager.swift */,
+				JJ000012 /* VoiceEnrollmentManager.swift */,
 			);
 			path = Diarization;
 			sourceTree = "<group>";
@@ -433,6 +445,10 @@
 				II000001 /* RecordingToolbarButton.swift in Sources */,
 				II000002 /* LiveTranscriptBanner.swift in Sources */,
 				II000003 /* CatppuccinColors.swift in Sources */,
+				JJ000001 /* DiarizationMode.swift in Sources */,
+				JJ000002 /* VoiceEnrollmentManager.swift in Sources */,
+				JJ000003 /* SpeakerProfilesView.swift in Sources */,
+				JJ000004 /* VoiceEnrollmentSheet.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

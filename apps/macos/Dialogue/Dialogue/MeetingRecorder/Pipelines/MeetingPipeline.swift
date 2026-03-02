@@ -7,7 +7,9 @@ typealias MeetingPipeline = RealtimePipeline
 
 extension MeetingPipeline {
     /// Convenience factory for the meeting audio pipeline.
-    static func createMeeting() -> RealtimePipeline {
-        RealtimePipeline(streamType: .meeting)
+    ///
+    /// - Parameter mode: Diarization backend to use (Sortformer or Pyannote).
+    static func createMeeting(mode: DiarizationMode = .pyannoteStreaming) -> RealtimePipeline {
+        RealtimePipeline(streamType: .meeting, mode: mode)
     }
 }

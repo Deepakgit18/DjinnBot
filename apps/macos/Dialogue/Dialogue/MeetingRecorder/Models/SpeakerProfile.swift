@@ -1,3 +1,4 @@
+import FluidAudio
 import Foundation
 import SwiftData
 
@@ -63,8 +64,20 @@ final class SpeakerProfile {
 // MARK: - Speaker Profile Store
 
 /// Manages cross-session speaker lookup and persistence via SwiftData.
+///
+/// Provides methods to:
+/// - Resolve a speaker profile from an embedding (find-or-create)
+/// - Load all profiles as FluidAudio `Speaker` objects for `SpeakerManager`
+/// - Save/update profiles from post-recording speaker data
 actor SpeakerProfileStore {
-    private let modelContainer: ModelContainer
+
+    /// Shared singleton. `nil` if SwiftData container initialisation failed.
+    static let shared: SpeakerProfileStore? = try? SpeakerProfileStore()
+
+    /// The single shared `ModelContainer`. Exposed so views can use the
+    /// same container (creating multiple containers for the same schema
+    /// causes SwiftData to invalidate model objects).
+    let modelContainer: ModelContainer
     private let matchThreshold: Float = 0.75
 
     init() throws {
@@ -72,6 +85,8 @@ actor SpeakerProfileStore {
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         self.modelContainer = try ModelContainer(for: schema, configurations: [config])
     }
+
+    // MARK: - Resolve (Find or Create)
 
     /// Find or create a speaker profile matching the given embedding.
     @MainActor
@@ -106,4 +121,109 @@ actor SpeakerProfileStore {
         try context.save()
         return profile
     }
+
+    // MARK: - Load All as FluidAudio Speakers
+
+    /// Load all stored profiles as FluidAudio `Speaker` objects,
+    /// suitable for `SpeakerManager.initializeKnownSpeakers(_:)`.
+    ///
+    /// Returns speakers sorted by most recently seen first.
+    @MainActor
+    func loadAllKnownFluidSpeakers() throws -> [Speaker] {
+        let context = modelContainer.mainContext
+        let descriptor = FetchDescriptor<SpeakerProfile>(
+            sortBy: [SortDescriptor(\.lastSeenDate, order: .reverse)]
+        )
+        let profiles = try context.fetch(descriptor)
+        return profiles.compactMap { profile in
+            guard !profile.embedding.isEmpty else { return nil }
+            return Speaker(
+                id: profile.speakerID,
+                name: profile.displayName,
+                currentEmbedding: profile.embedding
+            )
+        }
+    }
+
+    // MARK: - Save / Update from FluidAudio Speaker Data
+
+    /// Save or update a profile from post-recording speaker data.
+    ///
+    /// If a profile with a matching `speakerID` exists, its embedding is
+    /// updated via running average. Otherwise a new profile is created.
+    ///
+    /// - Parameters:
+    ///   - speakerId: Unique speaker identifier (from FluidAudio `Speaker.id`)
+    ///   - displayName: Human-readable name (from `Speaker.name`)
+    ///   - embedding: 256-d L2-normalised embedding
+    @MainActor
+    func saveOrUpdateProfile(speakerId: String, displayName: String, embedding: [Float]) throws {
+        guard !embedding.isEmpty else { return }
+
+        let context = modelContainer.mainContext
+        let descriptor = FetchDescriptor<SpeakerProfile>(
+            sortBy: [SortDescriptor(\.lastSeenDate, order: .reverse)]
+        )
+        let allProfiles = try context.fetch(descriptor)
+
+        // Check for exact ID match first
+        if let existing = allProfiles.first(where: { $0.speakerID == speakerId }) {
+            existing.updateEmbedding(with: embedding)
+            if !displayName.isEmpty, displayName != speakerId {
+                existing.displayName = displayName
+            }
+            try context.save()
+            return
+        }
+
+        // Check for embedding similarity match (speaker may have been renamed)
+        if let similar = allProfiles.first(where: { $0.cosineSimilarity(with: embedding) > matchThreshold }) {
+            similar.updateEmbedding(with: embedding)
+            try context.save()
+            return
+        }
+
+        // Create new profile
+        let profile = SpeakerProfile(
+            speakerID: speakerId,
+            displayName: displayName.isEmpty ? speakerId : displayName,
+            embedding: embedding
+        )
+        context.insert(profile)
+        try context.save()
+    }
+
+    // MARK: - Load as Cached Profiles (for MergeEngine)
+
+    /// Load all profiles as lightweight value-type copies for in-memory matching.
+    ///
+    /// Used by `MergeEngine` at recording start to avoid async actor calls
+    /// during real-time segment processing.
+    @MainActor
+    func loadCachedProfiles() throws -> [CachedSpeakerProfile] {
+        let context = modelContainer.mainContext
+        let descriptor = FetchDescriptor<SpeakerProfile>(
+            sortBy: [SortDescriptor(\.lastSeenDate, order: .reverse)]
+        )
+        let profiles = try context.fetch(descriptor)
+        return profiles.compactMap { profile in
+            guard !profile.embedding.isEmpty else { return nil }
+            return CachedSpeakerProfile(
+                speakerId: profile.speakerID,
+                name: profile.displayName,
+                embedding: profile.embedding
+            )
+        }
+    }
+}
+
+// MARK: - Cached Speaker Profile (Value Type)
+
+/// Lightweight, `Sendable` snapshot of a speaker profile for in-memory matching.
+///
+/// Avoids the need to cross actor boundaries during real-time processing.
+struct CachedSpeakerProfile: Sendable {
+    let speakerId: String
+    let name: String
+    let embedding: [Float]
 }

@@ -3,9 +3,12 @@ import Foundation
 import OSLog
 import Speech
 
-/// Pre-downloads and caches ASR (SpeechAnalyzer) and diarization (Sortformer)
-/// models at app launch so recording can start instantly without waiting for
+/// Pre-downloads and caches ASR (SpeechAnalyzer) and diarization models
+/// at app launch so recording can start instantly without waiting for
 /// model downloads.
+///
+/// Supports both Sortformer and Pyannote diarization backends. The active
+/// backend is determined by the `diarizationMode` stored in `UserDefaults`.
 ///
 /// Publish `state` so the UI can show download progress and disable recording
 /// until models are ready.
@@ -36,6 +39,12 @@ final class ModelPreloader: ObservableObject {
     /// Pre-loaded Sortformer models, reused by `RealtimeDiarizationManager`.
     private(set) var sortformerModels: SortformerModels?
 
+    /// Pre-loaded Pyannote diarizer models (segmentation + WeSpeaker).
+    private(set) var diarizerModels: DiarizerModels?
+
+    /// The diarization mode that was used for the last preload.
+    private(set) var preloadedMode: DiarizationMode?
+
     /// Matched ASR locale (confirmed available on this device).
     private(set) var asrLocale: Locale?
 
@@ -59,9 +68,31 @@ final class ModelPreloader: ObservableObject {
         preloadTask = Task { await performPreload() }
     }
 
+    /// Re-preload diarization models if the selected mode has changed since
+    /// the last preload. Call this when the user switches diarization mode.
+    func preloadIfModeChanged() {
+        let currentMode = Self.selectedDiarizationMode
+        if preloadedMode != currentMode {
+            logger.info("Diarization mode changed to \(currentMode.rawValue); re-preloading models")
+            // Clear stale models for the previous mode
+            sortformerModels = nil
+            diarizerModels = nil
+            preloadedMode = nil
+            state = .idle
+            preload()
+        }
+    }
+
     private var isFailedState: Bool {
         if case .failed = state { return true }
         return false
+    }
+
+    /// Read the currently selected diarization mode from UserDefaults.
+    static var selectedDiarizationMode: DiarizationMode {
+        let raw = UserDefaults.standard.string(forKey: "diarizationMode")
+            ?? DiarizationMode.pyannoteStreaming.rawValue
+        return DiarizationMode(rawValue: raw) ?? .pyannoteStreaming
     }
 
     private func performPreload() async {
@@ -72,7 +103,7 @@ final class ModelPreloader: ObservableObject {
         do {
             guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: .current) else {
                 logger.warning("No supported ASR locale for \(Locale.current.identifier)")
-                // ASR unavailable is non-fatal; diarization can still work
+                // ASR unavailable is non-fatal; diarization still runs
                 state = .downloading(description: "Downloading diarization models...", fractionComplete: nil)
                 try await preloadDiarization()
                 state = .ready
@@ -118,7 +149,7 @@ final class ModelPreloader: ObservableObject {
             // Continue to diarization even if ASR fails
         }
 
-        // --- Diarization (Sortformer) models ---
+        // --- Diarization models (mode-dependent) ---
         do {
             state = .downloading(description: "Downloading diarization models...", fractionComplete: nil)
             try await preloadDiarization()
@@ -129,14 +160,27 @@ final class ModelPreloader: ObservableObject {
         }
 
         state = .ready
-        logger.info("Model preload complete (ASR: \(self.asrAssetsInstalled), Diarization: \(self.sortformerModels != nil))")
+        logger.info("Model preload complete (ASR: \(self.asrAssetsInstalled), Mode: \(self.preloadedMode?.rawValue ?? "none"))")
     }
 
+    /// Download diarization models for the currently selected mode.
     private func preloadDiarization() async throws {
-        let config = SortformerConfig.default
-        let models = try await SortformerModels.loadFromHuggingFace(config: config)
-        self.sortformerModels = models
-        logger.info("Sortformer models loaded")
+        let mode = Self.selectedDiarizationMode
+
+        switch mode {
+        case .sortformer:
+            let config = SortformerConfig.default
+            let models = try await SortformerModels.loadFromHuggingFace(config: config)
+            self.sortformerModels = models
+            logger.info("Sortformer models loaded")
+
+        case .pyannoteStreaming:
+            let models = try await DiarizerModels.downloadIfNeeded()
+            self.diarizerModels = models
+            logger.info("Pyannote diarizer models loaded")
+        }
+
+        self.preloadedMode = mode
     }
 
     // MARK: - Cleanup
@@ -144,6 +188,8 @@ final class ModelPreloader: ObservableObject {
     /// Release cached models (e.g. on memory warning or app backgrounding).
     func releaseCachedModels() {
         sortformerModels = nil
+        diarizerModels = nil
+        preloadedMode = nil
         asrAssetsInstalled = false
         asrLocale = nil
         state = .idle

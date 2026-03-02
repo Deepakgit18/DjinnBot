@@ -8,6 +8,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var documentManager: DocumentManager
     @EnvironmentObject var appState: AppState
+    @Environment(\.openWindow) private var openWindow
     
     // MARK: - Meeting Recorder (app-wide)
     
@@ -141,6 +142,9 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openSpeakerProfiles)) { _ in
+            openWindow(id: "speaker-profiles")
         }
     }
 

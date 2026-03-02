@@ -40,13 +40,18 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
     /// - Parameters:
     ///   - micEnabled: Whether to capture local microphone audio
     ///   - meetingEnabled: Whether to capture meeting app audio
-    func start(micEnabled: Bool, meetingEnabled: Bool) async throws {
-        logger.info("Starting DualAudioEngine (mic: \(micEnabled), meeting: \(meetingEnabled))")
+    ///   - diarizationMode: Which diarization backend to use
+    func start(
+        micEnabled: Bool,
+        meetingEnabled: Bool,
+        diarizationMode: DiarizationMode = .pyannoteStreaming
+    ) async throws {
+        logger.info("Starting DualAudioEngine (mic: \(micEnabled), meeting: \(meetingEnabled), diarization: \(diarizationMode.rawValue))")
         TimelineManager.shared.start()
 
         // Prepare pipelines in parallel
         if micEnabled {
-            let mic = MicPipeline.createMic()
+            let mic = MicPipeline.createMic(mode: diarizationMode)
             try await mic.prepare()
             self.micPipeline = mic
         }
@@ -54,7 +59,7 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
         if meetingEnabled {
             meetingApps = await MeetingAppDetector.shared.runningMeetingApplications()
             if !meetingApps.isEmpty {
-                let meeting = MeetingPipeline.createMeeting()
+                let meeting = MeetingPipeline.createMeeting(mode: diarizationMode)
                 try await meeting.prepare()
                 self.meetingPipeline = meeting
                 try await setupMeetingSCStream()
@@ -163,6 +168,22 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
         if let wavSamples = MeetingAudioConverter.toFloatArray(buffer) as [Float]? {
             Task { await recorder.writeSamples(wavSamples) }
         }
+    }
+
+    // MARK: - Speaker Extraction (Post-Recording)
+
+    /// Extract all tracked speakers from both pipelines before stopping.
+    ///
+    /// Must be called **before** `stop()` since stop releases the pipelines.
+    func extractAllSpeakers() async -> [ExtractedSpeaker] {
+        var speakers: [ExtractedSpeaker] = []
+        if let mic = micPipeline {
+            speakers.append(contentsOf: await mic.extractSpeakers())
+        }
+        if let meeting = meetingPipeline {
+            speakers.append(contentsOf: await meeting.extractSpeakers())
+        }
+        return speakers
     }
 
     // MARK: - Stop

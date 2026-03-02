@@ -5,16 +5,21 @@ import Foundation
 import OSLog
 
 /// Base realtime processing pipeline that runs both ASR (SpeechAnalyzer)
-/// and diarization (FluidAudio Sortformer) on a single audio stream.
+/// and diarization (FluidAudio Sortformer or Pyannote) on a single audio stream.
 ///
 /// Two instances are created: one for the microphone and one for meeting app audio.
 /// Each pipeline manages its own transcription and diarization managers.
+///
+/// The diarization backend is selected via `DiarizationMode`:
+/// - `.sortformer`: Frame-level streaming, 4 speakers, fast.
+/// - `.pyannoteStreaming`: Chunk-based, 6+ speakers, cross-session memory.
 @available(macOS 26.0, *)
 final class RealtimePipeline: Sendable {
 
     // MARK: - Properties
 
     let streamType: StreamType
+    let diarizationMode: DiarizationMode
     private let transcriptionManager: RealtimeTranscriptionManager
     private let diarizationManager: RealtimeDiarizationManager
     private let logger = Logger(subsystem: "bot.djinn.app.dialog", category: "Pipeline")
@@ -29,33 +34,30 @@ final class RealtimePipeline: Sendable {
 
     // MARK: - Init
 
-    init(streamType: StreamType) {
+    init(streamType: StreamType, mode: DiarizationMode = .pyannoteStreaming) {
         self.streamType = streamType
+        self.diarizationMode = mode
         self.transcriptionManager = RealtimeTranscriptionManager(streamType: streamType)
-        self.diarizationManager = RealtimeDiarizationManager(streamType: streamType)
+        self.diarizationManager = RealtimeDiarizationManager(streamType: streamType, mode: mode)
     }
 
     // MARK: - Lifecycle
 
-    /// Prepare both ASR and diarization sub-systems using pre-loaded models
-    /// from `ModelPreloader`.
+    /// Prepare both ASR and diarization sub-systems.
     ///
-    /// When `ModelPreloader.shared` has already downloaded models, this skips
-    /// all network operations and initializes instantly. Falls back to downloading
-    /// if pre-loaded models are unavailable.
-    ///
+    /// The diarization manager reads pre-loaded models from `ModelPreloader.shared`.
     /// ASR preparation is best-effort: if speech assets are missing, diarization
     /// still runs and the WAV is still recorded. ASR can be retried later on the file.
     func prepare() async throws {
         let preloader = await ModelPreloader.shared
-        let sortformerModels = await preloader.sortformerModels
         let asrAssetsPreloaded = await preloader.asrAssetsInstalled
         let asrLocale = await preloader.asrLocale
 
-        logger.info("Preparing \(self.streamType.rawValue) pipeline (preloaded ASR: \(asrAssetsPreloaded), preloaded diarization: \(sortformerModels != nil))")
+        logger.info("Preparing \(self.streamType.rawValue) pipeline (mode: \(self.diarizationMode.rawValue), preloaded ASR: \(asrAssetsPreloaded))")
 
-        // Diarization is required; ASR is best-effort
-        async let diarizationResult: () = diarizationManager.prepare(preloadedModels: sortformerModels)
+        // Diarization is required; ASR is best-effort.
+        // Diarization manager reads models from ModelPreloader internally.
+        async let diarizationResult: () = diarizationManager.prepare()
 
         do {
             try await transcriptionManager.prepare(
@@ -73,7 +75,7 @@ final class RealtimePipeline: Sendable {
         }
 
         try await diarizationResult
-        logger.info("\(self.streamType.rawValue) pipeline ready (ASR: \(self.asrAvailable))")
+        logger.info("\(self.streamType.rawValue) pipeline ready (ASR: \(self.asrAvailable), diarization: \(self.diarizationMode.rawValue))")
     }
 
     // MARK: - Audio Processing
@@ -82,12 +84,6 @@ final class RealtimePipeline: Sendable {
     ///
     /// The buffer is first converted to 16 kHz mono Float32 if needed, then
     /// fed to both ASR and diarization concurrently.
-    ///
-    /// - Parameters:
-    ///   - buffer: Raw audio buffer from the capture source
-    ///   - absoluteTime: Wall-clock offset from recording start
-    /// Process an incoming audio buffer. Must be called from a context where
-    /// it is safe to send the buffer (the caller owns it exclusively).
     func processBuffer(_ buffer: AVAudioPCMBuffer, at absoluteTime: TimeInterval) {
         // Convert to 16 kHz mono if needed
         guard let converted = MeetingAudioConverter.convertTo16kMono(buffer) else {
@@ -143,6 +139,16 @@ final class RealtimePipeline: Sendable {
             int16Ptr[0][i] = Int16(clamped * 32767.0)
         }
         return buffer
+    }
+
+    // MARK: - Speaker Extraction (Post-Recording)
+
+    /// Extract tracked speakers from the diarization backend for profile saving.
+    ///
+    /// Only produces results in Pyannote mode; Sortformer has no
+    /// cross-session speaker embeddings.
+    func extractSpeakers() async -> [ExtractedSpeaker] {
+        await diarizationManager.extractSpeakers()
     }
 
     // MARK: - Shutdown
