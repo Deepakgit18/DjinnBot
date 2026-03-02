@@ -9,46 +9,12 @@ import SwiftUI
 @available(macOS 26.0, *)
 struct SpeakerProfilesView: View {
 
-    @AppStorage("diarizationMode") private var diarizationMode: DiarizationMode = .pyannoteStreaming
-
     /// Value-type snapshots of enrolled voices for display.
     @State private var voices: [VoiceEmbedding] = []
     @State private var showEnrollSheet = false
 
-    @ObservedObject private var preloader = ModelPreloader.shared
-
     var body: some View {
         Form {
-            // --- Diarization Mode ---
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Diarization Engine")
-                        .font(.headline)
-                    Text("Choose which speaker diarization model to use during recordings.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Picker("Mode", selection: $diarizationMode) {
-                    ForEach(DiarizationMode.allCases, id: \.self) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
-                .pickerStyle(.radioGroup)
-                .onChange(of: diarizationMode) { _, _ in
-                    ModelPreloader.shared.preloadIfModeChanged()
-                }
-
-                if !preloader.state.isReady {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small)
-                        Text("Downloading models...")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
             // --- Speaker Profiles ---
             Section {
                 VStack(alignment: .leading, spacing: 8) {

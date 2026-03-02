@@ -200,16 +200,22 @@ final class MergeEngine: ObservableObject {
                 let nearestDiar = sameStreamDiar.min { (a: TaggedSegment, b: TaggedSegment) -> Bool in
                     abs(a.start - asrStartTime) < abs(b.start - asrStartTime)
                 }
+                // Fallback: use the nearest diarization segment's speaker if
+                // available, so that VoiceID renames carry through even when
+                // timestamps don't perfectly overlap.
+                let fallbackSpeaker: String
                 if let nearest = nearestDiar {
+                    fallbackSpeaker = nearest.speaker
                     let ns = String(format: "%.1f", nearest.start)
                     let ne = String(format: "%.1f", nearest.end)
-                    logger.warning("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] NO OVERLAP (\(diarCount) diar segs, nearest: [\(ns)s-\(ne)s]): \"\(asr.text)\"")
+                    logger.warning("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] NO OVERLAP (\(diarCount) diar segs, nearest: [\(ns)s-\(ne)s]) → using '\(fallbackSpeaker)': \"\(asr.text)\"")
                 } else {
+                    fallbackSpeaker = "\(asr.stream.rawValue)-Unknown"
                     logger.warning("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] NO DIAR SEGS: \"\(asr.text)\"")
                 }
                 let fallback = TaggedSegment(
                     stream: asr.stream,
-                    speaker: "\(asr.stream.rawValue)-Unknown",
+                    speaker: fallbackSpeaker,
                     start: asr.start,
                     end: asr.end,
                     text: asr.text,

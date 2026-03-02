@@ -79,9 +79,18 @@ public final class VoiceID {
     private let logger = Logger(subsystem: "bot.djinn.app.dialog", category: "VoiceID")
 
     /// Cosine similarity threshold for a positive match.
-    /// Range 0.65–0.80; 0.725 balances false-positive/negative rates
-    /// for WeSpeaker ResNet34-LM embeddings.
-    public var similarityThreshold: Float = 0.725
+    /// Range 0.50–0.90; default 0.65. Configurable in Settings.
+    public var similarityThreshold: Float {
+        get { Float(UserDefaults.standard.double(forKey: "voiceID_similarityThreshold")).nonZeroOrDefault(0.65) }
+        set { UserDefaults.standard.set(Double(newValue), forKey: "voiceID_similarityThreshold") }
+    }
+
+    /// Clustering threshold passed to DiarizerConfig during enrollment embedding extraction.
+    /// Range 0.50–0.90; default 0.65. Configurable in Settings.
+    public var clusteringThreshold: Float {
+        get { Float(UserDefaults.standard.double(forKey: "voiceID_clusteringThreshold")).nonZeroOrDefault(0.65) }
+        set { UserDefaults.standard.set(Double(newValue), forKey: "voiceID_clusteringThreshold") }
+    }
 
     private init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -112,7 +121,7 @@ public final class VoiceID {
         }
 
         let config = DiarizerConfig(
-            clusteringThreshold: 0.7,
+            clusteringThreshold: clusteringThreshold,
             minSpeechDuration: 1.0,
             minSilenceGap: 0.5,
             debugMode: true,
@@ -319,5 +328,15 @@ public final class VoiceID {
         } catch {
             logger.error("Failed to persist enrolled voices: \(error.localizedDescription)")
         }
+    }
+}
+
+// MARK: - Float helper
+
+private extension Float {
+    /// Returns `self` when non-zero, otherwise `fallback`.
+    /// Handles the case where UserDefaults returns 0 for an unset key.
+    func nonZeroOrDefault(_ fallback: Float) -> Float {
+        self == 0 ? fallback : self
     }
 }

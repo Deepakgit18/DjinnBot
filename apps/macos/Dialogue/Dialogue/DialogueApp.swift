@@ -72,17 +72,6 @@ struct DialogueApp: App {
         Settings {
             SettingsView()
         }
-
-        // Speaker Profiles window (diarization mode + voice enrollment)
-        Window("Speaker Profiles", id: "speaker-profiles") {
-            if #available(macOS 26.0, *) {
-                SpeakerProfilesView()
-            } else {
-                Text("Speaker Profiles requires macOS 26.0 or later.")
-                    .padding()
-            }
-        }
-        .defaultSize(width: 520, height: 520)
     }
 }
 

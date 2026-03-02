@@ -67,6 +67,10 @@ actor RealtimeDiarizationManager {
     ///
     /// Reads pre-loaded models from `ModelPreloader.shared` when available,
     /// falling back to downloading from HuggingFace (slow path).
+    ///
+    /// For Pyannote mode, enrolled voices from `VoiceID` are pre-loaded
+    /// into the `SpeakerManager` so known speakers are recognised
+    /// immediately from the first diarization chunk.
     func prepare() async throws {
         logger.info("Preparing diarizer for \(self.streamType.rawValue) stream (mode: \(self.mode.rawValue))")
 
@@ -124,12 +128,43 @@ actor RealtimeDiarizationManager {
         let diarizer = DiarizerManager(config: config)
         diarizer.initialize(models: models)
 
+        // Load enrolled voices from VoiceID into SpeakerManager so that
+        // known speakers are recognised from the first chunk. VoiceID owns
+        // persistence; we convert its embeddings to FluidAudio Speaker objects.
+        loadEnrolledVoices(into: diarizer)
+
         self.pyannoteManager = diarizer
         sampleBuffer.removeAll()
         bufferStartTime = 0
         isFirstChunk = true
 
         logger.info("PyannoteManager ready for \(self.streamType.rawValue) stream")
+    }
+
+    /// Convert VoiceID enrolled voices to FluidAudio `Speaker` objects and
+    /// pre-load them into the DiarizerManager's `SpeakerManager`.
+    ///
+    /// This enables the SDK's built-in cosine-distance matching so that
+    /// known speakers are recognised immediately from the first chunk,
+    /// rather than waiting for MergeEngine's post-hoc VoiceID check.
+    private func loadEnrolledVoices(into diarizer: DiarizerManager) {
+        let enrolled = VoiceID.shared.allEnrolledVoices()
+        guard !enrolled.isEmpty else {
+            logger.info("No VoiceID enrolled voices to load")
+            return
+        }
+
+        let speakers = enrolled.map { voice in
+            Speaker(
+                id: voice.userID,
+                name: voice.userID,
+                currentEmbedding: voice.vector,
+                isPermanent: true
+            )
+        }
+        diarizer.initializeKnownSpeakers(speakers)
+        let names = enrolled.map(\.userID).joined(separator: ", ")
+        logger.info("Loaded \(speakers.count) enrolled voice(s) into SpeakerManager: \(names)")
     }
 
     // MARK: - Streaming Processing

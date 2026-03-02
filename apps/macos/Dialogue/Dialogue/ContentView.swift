@@ -8,7 +8,6 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var documentManager: DocumentManager
     @EnvironmentObject var appState: AppState
-    @Environment(\.openWindow) private var openWindow
     
     // MARK: - Meeting Recorder (app-wide)
     
@@ -144,7 +143,12 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSpeakerProfiles)) { _ in
-            openWindow(id: "speaker-profiles")
+            // Speaker Profiles are now in the main Settings window.
+            if #available(macOS 14.0, *) {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            } else {
+                NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+            }
         }
     }
 
