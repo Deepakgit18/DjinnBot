@@ -126,14 +126,21 @@ actor RealtimeDiarizationManager {
         self.sortformerDiarizer = diarizer
         logger.info("SortformerDiarizer ready for \(self.streamType.rawValue) stream")
 
-        // Hybrid Voice ID: load DiarizerModels (Pyannote + WeSpeaker) for
-        // embedding extraction so enrolled voices can be recognised even in
-        // Sortformer mode. Only initialised when enrolled voices exist.
-        guard VoiceID.shared.hasEnrolledVoices else {
+        // Hybrid Voice ID: set up the embedding extractor in the background
+        // so it doesn't block recording start. It's only needed after ~3s of
+        // speech, giving plenty of time to initialise.
+        if VoiceID.shared.hasEnrolledVoices {
+            Task { await self.prepareEmbeddingExtractor() }
+        } else {
             logger.info("No enrolled voices — skipping embedding extractor setup for Sortformer")
-            return
         }
+    }
 
+    // MARK: - Embedding Extractor Setup (background, non-blocking)
+
+    /// Initialise the DiarizerManager used for WeSpeaker embedding extraction
+    /// in Sortformer mode. Runs in the background so it doesn't delay recording.
+    private func prepareEmbeddingExtractor() async {
         do {
             let diarModels: DiarizerModels
             if let preloaded = await MainActor.run(body: { ModelPreloader.shared.diarizerModels }) {

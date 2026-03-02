@@ -174,6 +174,15 @@ final class ModelPreloader: ObservableObject {
             self.sortformerModels = models
             logger.info("Sortformer models loaded")
 
+            // Also preload DiarizerModels (Pyannote + WeSpeaker) when enrolled
+            // voices exist, so the Sortformer hybrid Voice ID embedding extractor
+            // doesn't have to compile them at recording start.
+            if VoiceID.shared.hasEnrolledVoices {
+                let diarModels = try await DiarizerModels.downloadIfNeeded()
+                self.diarizerModels = diarModels
+                logger.info("DiarizerModels also preloaded for Sortformer Voice ID")
+            }
+
         case .pyannoteStreaming:
             let models = try await DiarizerModels.downloadIfNeeded()
             self.diarizerModels = models
