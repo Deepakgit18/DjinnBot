@@ -49,10 +49,6 @@ final class MergeEngine: ObservableObject {
     /// Replaced on every partial update, cleared when the final arrives.
     private var livePartials: [StreamType: ASRSegment] = [:]
 
-    /// ASR segments that haven't matched any diarization segment yet.
-    /// Re-tried on every merge cycle as new diarization segments arrive.
-    private var pendingASR: [ASRSegment] = []
-
     /// Debounce timer for batch merge operations.
     private var mergeTimer: Timer?
     private let mergeInterval: TimeInterval = 0.25
@@ -194,31 +190,12 @@ final class MergeEngine: ObservableObject {
 
     /// Match finalized ASR text to diarization segments by temporal overlap,
     /// then append live partials at the end.
-    ///
-    /// ASR typically runs ahead of diarization (lower latency). When no diarization
-    /// segment overlaps an ASR result, it goes to `pendingASR` and is re-tried on
-    /// every subsequent merge cycle as new diarization segments arrive.
-    /// After 30 seconds with no match, a fallback "Unknown" attribution is used.
     private func performMerge() {
-        // Combine new finals with previously unmatched ASR for re-try.
-        // Sort by start time so earlier ASR claims earlier diar segments first.
-        let allASR = (pendingASR + finalASRBuffer).sorted { $0.start < $1.start }
-        finalASRBuffer.removeAll()
-        pendingASR.removeAll()
-
-        let maxPendingAge: TimeInterval = 30 // seconds before giving up
-
-        // Track which diar indices have already been claimed by an ASR this cycle.
-        // Each diar segment should only be matched by ONE ASR segment to prevent
-        // text overwriting (e.g., two ASR segments both best-matching the same diar).
-        var claimedIndices = Set<Int>()
-
-        for asr in allASR {
-            // Find overlapping diar segments that haven't been claimed yet
+        // 1. Merge finalized ASR results into diarization segments
+        for asr in finalASRBuffer {
+            // Find all diarization segments that overlap this ASR result
             let candidates = diarizationSegments.enumerated().filter {
-                overlapDuration($0.element, asr) > 0
-                    && $0.element.stream == asr.stream
-                    && !claimedIndices.contains($0.offset)
+                overlapDuration($0.element, asr) > 0 && $0.element.stream == asr.stream
             }
 
             let bestMatch = candidates.max { a, b in
@@ -230,49 +207,39 @@ final class MergeEngine: ObservableObject {
             let streamName = asr.stream.rawValue
 
             if let (index, matched) = bestMatch {
-                claimedIndices.insert(index)
                 let overlap = String(format: "%.2f", overlapDuration(matched, asr))
                 let ms = String(format: "%.1f", matched.start)
                 let me = String(format: "%.1f", matched.end)
                 let msg = "[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] → \(matched.speaker) [\(ms)s-\(me)s] overlap=\(overlap)s: \"\(asr.text)\""
                 logger.info("\(msg)")
-
-                // Append text (don't overwrite) — handles edge case where
-                // a previous cycle already set text on this segment.
-                if diarizationSegments[index].text.isEmpty {
-                    diarizationSegments[index].text = asr.text
-                } else {
-                    diarizationSegments[index].text += " " + asr.text
-                }
+                diarizationSegments[index].text = asr.text
                 diarizationSegments[index].isFinal = true
             } else {
-                // No overlapping unclaimed diar segment found.
-                // Check if diarization has caught up to this ASR's time range.
                 let sameStreamDiar = diarizationSegments.filter { $0.stream == asr.stream }
-                let latestDiarEnd = sameStreamDiar.map(\.end).max() ?? 0
-
-                if latestDiarEnd > asr.end + maxPendingAge {
-                    // Diarization has moved far past this ASR — give up, use fallback.
-                    // Attribute to the nearest diar speaker if possible.
-                    let nearest = sameStreamDiar.min { abs($0.start - asr.start) < abs($1.start - asr.start) }
-                    let speaker = nearest?.speaker ?? "\(asr.stream.rawValue)-Unknown"
-
-                    logger.warning("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] FALLBACK → \(speaker): \"\(asr.text)\"")
-                    let fallback = TaggedSegment(
-                        stream: asr.stream,
-                        speaker: speaker,
-                        start: asr.start,
-                        end: asr.end,
-                        text: asr.text,
-                        isFinal: true
-                    )
-                    diarizationSegments.append(fallback)
-                } else {
-                    // Diarization hasn't caught up yet — keep for re-try
-                    pendingASR.append(asr)
+                let diarCount = sameStreamDiar.count
+                let asrStartTime = asr.start
+                let nearestDiar = sameStreamDiar.min { (a: TaggedSegment, b: TaggedSegment) -> Bool in
+                    abs(a.start - asrStartTime) < abs(b.start - asrStartTime)
                 }
+                if let nearest = nearestDiar {
+                    let ns = String(format: "%.1f", nearest.start)
+                    let ne = String(format: "%.1f", nearest.end)
+                    logger.warning("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] NO OVERLAP (\(diarCount) diar segs, nearest: [\(ns)s-\(ne)s]): \"\(asr.text)\"")
+                } else {
+                    logger.warning("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] NO DIAR SEGS: \"\(asr.text)\"")
+                }
+                let fallback = TaggedSegment(
+                    stream: asr.stream,
+                    speaker: "\(asr.stream.rawValue)-Unknown",
+                    start: asr.start,
+                    end: asr.end,
+                    text: asr.text,
+                    isFinal: true
+                )
+                diarizationSegments.append(fallback)
             }
         }
+        finalASRBuffer.removeAll()
 
         // 2. Build the output: collapsed diarization segments + live partials
         var output = collapseAdjacentSegments(diarizationSegments)
@@ -381,7 +348,6 @@ final class MergeEngine: ObservableObject {
         mergeTimer = nil
         diarizationSegments.removeAll()
         finalASRBuffer.removeAll()
-        pendingASR.removeAll()
         livePartials.removeAll()
         mergedSegments.removeAll()
         speakerBuffers.removeAll()
