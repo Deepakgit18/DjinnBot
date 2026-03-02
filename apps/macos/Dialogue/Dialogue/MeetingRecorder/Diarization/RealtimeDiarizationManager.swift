@@ -685,7 +685,12 @@ actor RealtimeDiarizationManager {
             let endTime = offsetTime + Double(seg.endTimeSeconds)
             guard endTime > startTime else { return nil }
 
-            let speakerLabel = "\(streamType.rawValue)-\(seg.speakerId)"
+            // Use the enrolled voice name directly when SpeakerManager matched
+            // a known speaker (e.g. "sky"), without the stream prefix. Auto-
+            // generated IDs (e.g. "1", "2") still get the prefix to disambiguate
+            // Local-1 from Remote-1.
+            let isEnrolledName = VoiceID.shared.allEnrolledVoices().contains { $0.userID == seg.speakerId }
+            let speakerLabel = isEnrolledName ? seg.speakerId : "\(streamType.rawValue)-\(seg.speakerId)"
             let embedding = speakerEmbeddings[seg.speakerId] ?? []
 
             return TaggedSegment(
