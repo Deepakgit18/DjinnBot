@@ -194,10 +194,19 @@ final class MergeEngine: ObservableObject {
     /// Match finalized ASR text to diarization segments by temporal overlap,
     /// then append live partials at the end.
     ///
-    /// ASR finals that have no diarization overlap are held in `unattributedASR`
-    /// and retried every cycle until diarization catches up. They appear as
-    /// "Speaker-?" in the UI until resolved.
+    /// **Pyannote mode**: ASR finals with no diarization overlap are held in
+    /// `unattributedASR` and retried every cycle until diarization catches up.
+    /// They appear as "Speaker-?" in the UI until resolved. Pyannote timestamps
+    /// are accurate but lag behind ASR by ~10s.
+    ///
+    /// **Sortformer mode**: Frame-based timestamps are unreliable (internal
+    /// buffering offsets them from ASR wall-clock time). When no overlap is
+    /// found, the nearest same-stream diarization segment's speaker is used
+    /// immediately, since VoiceID has already resolved slot names.
     private func performMerge() {
+        let modeRaw = UserDefaults.standard.string(forKey: "diarizationMode") ?? ""
+        let currentMode = DiarizationMode(rawValue: modeRaw) ?? .pyannoteStreaming
+
         // 1a. Retry previously-unattributed ASR finals against the latest
         //     diarization data. Diarization may have caught up since last cycle.
         var stillUnattributed: [ASRSegment] = []
@@ -227,10 +236,27 @@ final class MergeEngine: ObservableObject {
                 logger.info("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] DEFERRED (no diar segs yet): \"\(asr.text)\"")
             } else if let resolved = resolveASR(asr) {
                 commitResolved(asr: asr, match: resolved)
+            } else if currentMode == .sortformer {
+                // Sortformer timestamps don't correlate with ASR timestamps
+                // (internal buffering, FIFO, frame offsets). Use the most
+                // recent same-stream diarization segment's speaker, which
+                // VoiceID has already resolved to an enrolled name if matched.
+                let recentDiar = sameStreamDiar.max { $0.end < $1.end }
+                let fallbackSpeaker = recentDiar?.speaker ?? "\(asr.stream.rawValue)-Unknown"
+                let fallback = TaggedSegment(
+                    stream: asr.stream,
+                    speaker: fallbackSpeaker,
+                    start: asr.start,
+                    end: asr.end,
+                    text: asr.text,
+                    isFinal: true
+                )
+                diarizationSegments.append(fallback)
+                logger.info("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] → '\(fallbackSpeaker)' (Sortformer nearest): \"\(asr.text)\"")
             } else {
-                // Diarization exists for this stream but doesn't cover this
-                // ASR time range yet. Hold as unattributed ("Speaker-?") and
-                // retry on subsequent merge cycles.
+                // Pyannote mode: diarization exists for this stream but
+                // doesn't cover this ASR time range yet. Hold as unattributed
+                // ("Speaker-?") and retry on subsequent merge cycles.
                 unattributedASR.append(asr)
                 let diarCount = sameStreamDiar.count
                 logger.info("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] UNATTRIBUTED (\(diarCount) diar segs, waiting for diar to catch up): \"\(asr.text)\"")
