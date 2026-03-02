@@ -2,6 +2,9 @@ import SwiftUI
 
 /// Catppuccin Mocha palette colors for speaker differentiation.
 /// Each color is used as a subtle row background tint for transcript entries.
+///
+/// Enrolled speakers get a fixed color chosen during enrollment.
+/// Other speakers get a hash-based color from the remaining palette slots.
 enum CatppuccinSpeaker {
 
     // MARK: - Mocha Accent Colors
@@ -28,16 +31,36 @@ enum CatppuccinSpeaker {
 
     /// Ordered palette for assigning colors to speakers.
     /// Chosen for maximum visual distinction between adjacent entries.
-    private static let palette: [Color] = [
+    static let palette: [Color] = [
         mauve, peach, teal, pink, sapphire, yellow,
         green, flamingo, blue, maroon, sky, lavender,
         rosewater, red,
     ]
 
+    /// Human-readable names for each palette color (same order as `palette`).
+    static let paletteNames: [String] = [
+        "Mauve", "Peach", "Teal", "Pink", "Sapphire", "Yellow",
+        "Green", "Flamingo", "Blue", "Maroon", "Sky", "Lavender",
+        "Rosewater", "Red",
+    ]
+
     /// Returns a consistent Catppuccin color for a speaker label.
+    ///
+    /// 1. If the speaker label matches an enrolled voice with an assigned color,
+    ///    that color is returned directly.
+    /// 2. Otherwise, a hash-based color is chosen from palette slots that are
+    ///    NOT reserved by enrolled voices.
     static func color(for speaker: String) -> Color {
+        // Check if this speaker is an enrolled voice with an assigned color.
+        if let index = enrolledColorIndex(for: speaker) {
+            return palette[index % palette.count]
+        }
+
+        // Hash into the unreserved palette.
+        let unreserved = unreservedPalette()
+        if unreserved.isEmpty { return palette[abs(speaker.hashValue) % palette.count] }
         let hash = abs(speaker.hashValue)
-        return palette[hash % palette.count]
+        return unreserved[hash % unreserved.count]
     }
 
     /// Row background opacity for light/dark appearance.
@@ -47,5 +70,33 @@ enum CatppuccinSpeaker {
     /// Speaker label text color — uses the full-strength accent.
     static func labelColor(for speaker: String) -> Color {
         color(for: speaker)
+    }
+
+    // MARK: - Enrolled Color Helpers
+
+    /// Returns the palette index for an enrolled voice matching this speaker label,
+    /// or nil if no enrolled voice matches.
+    private static func enrolledColorIndex(for speaker: String) -> Int? {
+        let voices = VoiceID.shared.allEnrolledVoices()
+        // Speaker labels may be just the userID (after VoiceID rename)
+        // or prefixed like "Local-sky", "Remote-sky".
+        for voice in voices {
+            guard let idx = voice.colorIndex else { continue }
+            if speaker == voice.userID
+                || speaker.hasSuffix("-\(voice.userID)") {
+                return idx
+            }
+        }
+        return nil
+    }
+
+    /// Palette colors NOT reserved by any enrolled voice.
+    private static func unreservedPalette() -> [Color] {
+        let reserved = Set(
+            VoiceID.shared.allEnrolledVoices().compactMap(\.colorIndex)
+        )
+        return palette.enumerated()
+            .filter { !reserved.contains($0.offset) }
+            .map(\.element)
     }
 }

@@ -35,13 +35,17 @@ public struct VoiceEmbedding: Codable, Equatable, Identifiable {
     public let vector: [Float]      // 256-dim, L2-normalized
     public let enrolledAt: Date
     public let clipCount: Int
+    /// Index into `CatppuccinSpeaker.palette` for this speaker's assigned color.
+    /// `nil` means no color assigned (legacy enrollments).
+    public var colorIndex: Int?
 
-    public init(userID: String, vector: [Float], clipCount: Int) {
+    public init(userID: String, vector: [Float], clipCount: Int, colorIndex: Int? = nil) {
         self.id = UUID()
         self.userID = userID
         self.vector = vector
         self.enrolledAt = Date()
         self.clipCount = clipCount
+        self.colorIndex = colorIndex
     }
 }
 
@@ -189,7 +193,7 @@ public final class VoiceID {
     ///   - audioClips: One or more 16 kHz mono Float32 audio clips.
     /// - Returns: The persisted `VoiceEmbedding`.
     @discardableResult
-    public func enroll(userID: String, audioClips: [[Float]]) async throws -> VoiceEmbedding {
+    public func enroll(userID: String, audioClips: [[Float]], colorIndex: Int? = nil) async throws -> VoiceEmbedding {
         guard !audioClips.isEmpty else { throw VoiceIDError.noAudioClips }
 
         var vectors: [[Float]] = []
@@ -199,12 +203,20 @@ public final class VoiceID {
         }
 
         let averaged = averageVectors(vectors)
-        let embedding = VoiceEmbedding(userID: userID, vector: averaged, clipCount: audioClips.count)
+        let embedding = VoiceEmbedding(userID: userID, vector: averaged, clipCount: audioClips.count, colorIndex: colorIndex)
         enrolledVoices[userID] = embedding
         saveToDisk()
 
         logger.info("Enrolled '\(userID)' from \(audioClips.count) clip(s)")
         return embedding
+    }
+
+    /// Update the color index for an enrolled voice.
+    public func setColor(userID: String, colorIndex: Int?) {
+        guard var voice = enrolledVoices[userID] else { return }
+        voice.colorIndex = colorIndex
+        enrolledVoices[userID] = voice
+        saveToDisk()
     }
 
     /// Remove an enrolled voice.

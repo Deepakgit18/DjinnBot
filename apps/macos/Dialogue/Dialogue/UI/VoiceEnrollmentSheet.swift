@@ -18,6 +18,7 @@ struct VoiceEnrollmentSheet: View {
     var onComplete: () -> Void = {}
 
     @State private var speakerName: String = ""
+    @State private var selectedColorIndex: Int = 0
 
     var body: some View {
         VStack(spacing: 20) {
@@ -41,6 +42,14 @@ struct VoiceEnrollmentSheet: View {
             TextField("Speaker Name (e.g. your name)", text: $speakerName)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 300)
+
+            // Color picker
+            VStack(spacing: 4) {
+                Text("Speaker Color")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                speakerColorPicker
+            }
 
             // Progress indicator
             clipProgressView
@@ -90,7 +99,7 @@ struct VoiceEnrollmentSheet: View {
                    !speakerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Button("Save Profile") {
                         Task {
-                            let success = await manager.saveProfile(name: speakerName)
+                            let success = await manager.saveProfile(name: speakerName, colorIndex: selectedColorIndex)
                             if success {
                                 onComplete()
                                 dismiss()
@@ -125,6 +134,33 @@ struct VoiceEnrollmentSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: - Color Picker
+
+    private var speakerColorPicker: some View {
+        let columns = Array(repeating: GridItem(.fixed(24), spacing: 6), count: 7)
+        return LazyVGrid(columns: columns, spacing: 6) {
+            ForEach(0..<CatppuccinSpeaker.palette.count, id: \.self) { index in
+                Button {
+                    selectedColorIndex = index
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(CatppuccinSpeaker.palette[index])
+                            .frame(width: 22, height: 22)
+                        if selectedColorIndex == index {
+                            Circle()
+                                .strokeBorder(Color.primary, lineWidth: 2)
+                                .frame(width: 22, height: 22)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(CatppuccinSpeaker.paletteNames[index])
+            }
+        }
+        .frame(maxWidth: 220)
     }
 
     // MARK: - State Views

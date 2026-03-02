@@ -200,7 +200,7 @@ final class VoiceEnrollmentManager: ObservableObject {
     ///
     /// - Parameter name: Display name for the speaker.
     /// - Returns: `true` if enrollment succeeded.
-    func saveProfile(name: String) async -> Bool {
+    func saveProfile(name: String, colorIndex: Int? = nil) async -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             state = .error("Name cannot be empty")
@@ -216,7 +216,7 @@ final class VoiceEnrollmentManager: ObservableObject {
 
         do {
             let userID = trimmedName.lowercased().replacingOccurrences(of: " ", with: "_")
-            try await VoiceID.shared.enroll(userID: userID, audioClips: collectedClips)
+            try await VoiceID.shared.enroll(userID: userID, audioClips: collectedClips, colorIndex: colorIndex)
             state = .done(profileName: trimmedName)
             logger.info("Enrolled '\(trimmedName)' from \(self.collectedClips.count) clips")
             return true

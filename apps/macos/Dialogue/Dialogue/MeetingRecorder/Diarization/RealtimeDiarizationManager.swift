@@ -33,10 +33,8 @@ actor RealtimeDiarizationManager {
 
     // --- Sortformer Voice ID: hybrid embedding extraction ---
     /// DiarizerManager used only for WeSpeaker embedding extraction in Sortformer mode.
+    /// Has NO pre-loaded speakers — produces raw, unbiased embeddings.
     private var embeddingExtractor: DiarizerManager?
-    /// Set of enrolled voice user-IDs, used to distinguish pre-loaded embeddings from
-    /// embeddings that the extractor actually found in the audio.
-    private var enrolledUserIDs: Set<String> = []
     /// Continuous ring buffer of raw mic audio (16 kHz mono Float32) for embedding
     /// extraction. Indexed by absolute sample offset so we can slice by time range.
     private var audioRingBuffer: [Float] = []
@@ -51,6 +49,9 @@ actor RealtimeDiarizationManager {
     private var identifiedSortformerSlots: Set<Int> = Set()
     /// Extracted embedding per speaker slot, attached to subsequent TaggedSegments.
     private var sortformerSlotEmbeddings: [Int: [Float]] = [:]
+    /// All emitted diarization segments per speaker slot, used to compute the
+    /// full time span when slicing the ring buffer for embedding extraction.
+    private var sortformerSlotSegments: [Int: [TaggedSegment]] = [:]
     /// Minimum accumulated speech duration (seconds) before attempting extraction.
     private let minDurationForExtraction: TimeInterval = 3.0
 
@@ -159,12 +160,13 @@ actor RealtimeDiarizationManager {
             let extractor = DiarizerManager(config: extractorConfig)
             extractor.initialize(models: diarModels)
 
-            // Pre-load enrolled voices so the extractor's SpeakerManager can
-            // match against them immediately.
-            loadEnrolledVoices(into: extractor)
+            // Do NOT pre-load enrolled voices into the extractor's SpeakerManager.
+            // The extractor must produce raw, unbiased embeddings from the audio.
+            // If enrolled speakers are pre-loaded, SpeakerManager will match audio
+            // to them (using its permissive 0.65 distance threshold), contaminate
+            // the enrolled embedding via EMA, and return a biased result.
+            // VoiceID handles matching after extraction.
 
-            // Remember enrolled IDs so we can filter them from extraction results.
-            self.enrolledUserIDs = Set(VoiceID.shared.allEnrolledVoices().map(\.userID))
             self.embeddingExtractor = extractor
             logger.info("Embedding extractor ready for Sortformer Voice ID on \(self.streamType.rawValue)")
         } catch {
@@ -339,16 +341,15 @@ actor RealtimeDiarizationManager {
         guard !identifiedSortformerSlots.contains(slotIndex) else { return }
 
         sortformerSpeakerDurations[slotIndex, default: 0] += segment.duration
+        sortformerSlotSegments[slotIndex, default: []].append(segment)
 
         guard sortformerSpeakerDurations[slotIndex, default: 0] >= minDurationForExtraction else { return }
 
-        // Collect all time ranges for this speaker from diarization segments
-        // that are already in MergeEngine, plus the current segment.
-        // For simplicity, slice a single contiguous window: from the earliest
-        // segment start to the latest segment end for this speaker.
-        // The Pyannote extraction pass will re-segment internally.
+        // Slice a contiguous window from the earliest to latest segment for
+        // this speaker. The Pyannote extraction pass will re-segment internally
+        // and extract embeddings only from the speech portions.
         let speakerLabel = segment.speaker
-        let allSegments = diarizationSegmentsForSpeaker(speakerLabel, latestSegment: segment)
+        let allSegments = sortformerSlotSegments[slotIndex] ?? [segment]
         guard let earliest = allSegments.min(by: { $0.start < $1.start }),
               let latest = allSegments.max(by: { $0.end < $1.end }) else { return }
 
@@ -372,19 +373,6 @@ actor RealtimeDiarizationManager {
         let numStr = label[range.upperBound...]
         guard let num = Int(numStr) else { return nil }
         return num - 1 // Convert to 0-based
-    }
-
-    /// Collect all diarization segments for a speaker label from the ring of
-    /// segments we've already emitted, plus the current one.
-    private func diarizationSegmentsForSpeaker(
-        _ label: String,
-        latestSegment: TaggedSegment
-    ) -> [TaggedSegment] {
-        // We don't have direct access to MergeEngine's internal segments from
-        // here (it's @MainActor). Instead, we track emitted segments locally.
-        // For the initial implementation, just use the latest segment's time
-        // range expanded by the accumulated duration.
-        return [latestSegment]
     }
 
     /// Run a one-shot Pyannote diarization on ring-buffer audio for a
@@ -438,34 +426,22 @@ actor RealtimeDiarizationManager {
         }
     }
 
-    /// Pick the embedding that was actually extracted from the audio, skipping
-    /// any pre-loaded enrolled voices. Falls back to the first non-enrolled
-    /// speaker in `SpeakerManager.getAllSpeakers()`.
+    /// Pick the first non-empty embedding extracted from the audio.
+    ///
+    /// The extractor has no pre-loaded speakers, so every embedding in
+    /// the result was genuinely extracted from the audio we fed in.
     private func pickExtractedEmbedding(
         from result: DiarizationResult,
         extractor: DiarizerManager
     ) -> [Float]? {
         // 1. Try speakerDatabase first (populated when debugMode=true).
         if let db = result.speakerDatabase {
-            for (id, embedding) in db where !enrolledUserIDs.contains(id) {
-                if !embedding.isEmpty { return embedding }
-            }
-        }
-
-        // 2. Fall back to SpeakerManager speakers, skipping enrolled ones.
-        for (id, speaker) in extractor.speakerManager.getAllSpeakers() {
-            if !enrolledUserIDs.contains(id), !speaker.currentEmbedding.isEmpty {
-                return speaker.currentEmbedding
-            }
-        }
-
-        // 3. If the extractor matched the audio to an enrolled speaker (good!),
-        //    use that embedding. This means the audio IS the enrolled person.
-        if let db = result.speakerDatabase {
             for (_, embedding) in db where !embedding.isEmpty {
                 return embedding
             }
         }
+
+        // 2. Fall back to SpeakerManager speakers.
         for (_, speaker) in extractor.speakerManager.getAllSpeakers() {
             if !speaker.currentEmbedding.isEmpty {
                 return speaker.currentEmbedding
@@ -543,7 +519,7 @@ actor RealtimeDiarizationManager {
             sortformerSpeakerDurations.removeAll()
             identifiedSortformerSlots.removeAll()
             sortformerSlotEmbeddings.removeAll()
-            enrolledUserIDs.removeAll()
+            sortformerSlotSegments.removeAll()
 
         case .pyannoteStreaming:
             pyannoteManager?.cleanup()

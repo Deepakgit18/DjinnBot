@@ -243,7 +243,37 @@ struct SettingsView: View {
                     }
                 } else {
                     ForEach(voices) { voice in
-                        HStack {
+                        HStack(spacing: 10) {
+                            // Color swatch — tap to cycle through palette
+                            Menu {
+                                ForEach(0..<CatppuccinSpeaker.palette.count, id: \.self) { idx in
+                                    Button {
+                                        VoiceID.shared.setColor(userID: voice.userID, colorIndex: idx)
+                                        loadVoices()
+                                    } label: {
+                                        HStack {
+                                            Circle()
+                                                .fill(CatppuccinSpeaker.palette[idx])
+                                                .frame(width: 10, height: 10)
+                                            Text(CatppuccinSpeaker.paletteNames[idx])
+                                            if voice.colorIndex == idx {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            } label: {
+                                Circle()
+                                    .fill(voice.colorIndex.map { CatppuccinSpeaker.palette[$0 % CatppuccinSpeaker.palette.count] } ?? Color.gray)
+                                    .frame(width: 16, height: 16)
+                                    .overlay(
+                                        Circle().strokeBorder(Color.primary.opacity(0.2), lineWidth: 1)
+                                    )
+                            }
+                            .menuStyle(.borderlessButton)
+                            .frame(width: 20)
+                            .help("Change color")
+
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(voice.userID)
                                     .fontWeight(.medium)
