@@ -19,6 +19,12 @@ struct SettingsView: View {
         return v == 0 ? 0.65 : v
     }()
 
+    // Embedding match threshold for unattributed segment resolution
+    @State private var embeddingMatchThreshold: Double = {
+        let v = UserDefaults.standard.double(forKey: "embeddingMatchThreshold")
+        return v == 0 ? 0.40 : v
+    }()
+
     // Speaker profiles
     @State private var voices: [VoiceEmbedding] = []
     @State private var showEnrollSheet = false
@@ -191,6 +197,23 @@ struct SettingsView: View {
                             UserDefaults.standard.set(newValue, forKey: "voiceID_similarityThreshold")
                         }
                     Text("Minimum cosine similarity (0 = unrelated, 1 = identical) for a voice to match an enrolled speaker. Applied consistently in both diarization modes: directly in Sortformer, and converted to the equivalent cosine distance for Pyannote's SpeakerManager.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Embedding Match Threshold")
+                        Spacer()
+                        Text(String(format: "%.2f", embeddingMatchThreshold))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $embeddingMatchThreshold, in: 0.20...0.80, step: 0.01)
+                        .onChange(of: embeddingMatchThreshold) { _, newValue in
+                            UserDefaults.standard.set(newValue, forKey: "embeddingMatchThreshold")
+                        }
+                    Text("Minimum cosine similarity for attributing an unidentified segment to a speaker based on voice embedding comparison. Lower values are more permissive; higher values require a closer voice match. Used when diarization gaps leave segments temporarily unattributed.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }

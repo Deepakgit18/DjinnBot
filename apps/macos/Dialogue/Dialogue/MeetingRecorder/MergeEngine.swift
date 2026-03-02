@@ -2,6 +2,13 @@ import Combine
 import Foundation
 import OSLog
 
+/// Timestamp-tracked unattributed ASR segment awaiting embedding-based resolution.
+struct UnattributedEntry: Sendable {
+    let asr: ASRSegment
+    /// Wall-clock time when this entry was first added to the unattributed buffer.
+    let addedAt: Date
+}
+
 /// Merges ASR transcript segments and diarization speaker segments from
 /// both mic and meeting streams onto a single shared audio timeline.
 ///
@@ -46,8 +53,9 @@ final class MergeEngine: ObservableObject {
 
     /// ASR finals that had no good diarization overlap and are waiting for
     /// diarization to catch up. Retried every merge cycle. Displayed as
-    /// "Speaker-?" in the UI until resolved.
-    private var unattributedASR: [ASRSegment] = []
+    /// "Speaker-?" in the UI until resolved. Each entry tracks when it was
+    /// first added so we can trigger embedding-based resolution after a delay.
+    private var unattributedASR: [UnattributedEntry] = []
 
     /// One "live partial" per stream for immediate display while ASR refines.
     /// Replaced on every partial update, cleared when the final arrives.
@@ -61,6 +69,38 @@ final class MergeEngine: ObservableObject {
     /// diarization segment for the match to be accepted. Prevents
     /// misattribution from tiny sliver overlaps at segment boundaries.
     private let minOverlapThreshold: TimeInterval = 0.5
+
+    /// Maximum gap (seconds) between an unattributed ASR segment and a
+    /// neighbouring resolved segment for the adjacency fallback to apply.
+    private let maxAdjacencyGap: TimeInterval = 2.0
+
+    /// How long (seconds) an unattributed entry can wait for embedding
+    /// extraction before falling through to overlap / adjacency.
+    private let embeddingTimeoutDelay: TimeInterval = 10.0
+
+    /// Registered per-stream diarization managers for embedding extraction.
+    /// Set by `RealtimePipeline` during setup so MergeEngine can request
+    /// on-demand embeddings from the ring buffer.
+    @available(macOS 26.0, *)
+    private var diarizationManagers: [StreamType: RealtimeDiarizationManager] = [:]
+
+    /// Tracks which unattributed entries already have an in-flight embedding
+    /// extraction task, to avoid duplicate requests.
+    private var pendingExtractions: Set<TimeInterval> = []
+
+    /// Stores completed embedding extraction results keyed by ASR start time.
+    /// Consumed on the next merge cycle.
+    private var completedEmbeddings: [TimeInterval: [Float]] = [:]
+
+    /// Tracks extractions that failed so we don't retry them.
+    private var failedExtractions: Set<TimeInterval> = []
+
+    /// Minimum cosine similarity for embedding-based speaker matching.
+    /// Configurable via Settings ("Embedding Match Threshold").
+    private var embeddingMatchThreshold: Float {
+        let v = UserDefaults.standard.float(forKey: "embeddingMatchThreshold")
+        return v > 0 ? v : 0.40
+    }
 
     private let logger = Logger(subsystem: "bot.djinn.app.dialog", category: "MergeEngine")
 
@@ -83,6 +123,15 @@ final class MergeEngine: ObservableObject {
     private var speakerDurations: [String: TimeInterval] = [:]
 
     private init() {}
+
+    // MARK: - Diarization Manager Registration
+
+    /// Register a diarization manager for a stream so MergeEngine can request
+    /// embedding extractions for unattributed segment resolution.
+    @available(macOS 26.0, *)
+    func registerDiarizationManager(_ manager: RealtimeDiarizationManager, for stream: StreamType) {
+        diarizationManagers[stream] = manager
+    }
 
     // MARK: - Ingestion
 
@@ -207,15 +256,68 @@ final class MergeEngine: ObservableObject {
         let modeRaw = UserDefaults.standard.string(forKey: "diarizationMode") ?? ""
         let currentMode = DiarizationMode(rawValue: modeRaw) ?? .pyannoteStreaming
 
-        // 1a. Retry previously-unattributed ASR finals against the latest
-        //     diarization data. Diarization may have caught up since last cycle.
-        var stillUnattributed: [ASRSegment] = []
-        for asr in unattributedASR {
-            if let resolved = resolveASR(asr) {
-                commitResolved(asr: asr, match: resolved)
-            } else {
-                stillUnattributed.append(asr)
+        // 1a. Retry previously-unattributed ASR finals.
+        //     Priority: embedding match → overlap → adjacency (after timeout).
+        //     Embedding extraction is triggered immediately when an entry becomes
+        //     unattributed. Results arrive asynchronously via completedEmbeddings.
+        var stillUnattributed: [UnattributedEntry] = []
+        for entry in unattributedASR {
+            let age = Date().timeIntervalSince(entry.addedAt)
+            let key = entry.asr.start
+
+            // 1. Check for completed embedding — highest priority
+            if let embedding = completedEmbeddings.removeValue(forKey: key) {
+                if let speaker = matchEmbeddingToSpeaker(embedding, stream: entry.asr.stream) {
+                    let asrS = String(format: "%.1f", entry.asr.start)
+                    let asrE = String(format: "%.1f", entry.asr.end)
+                    logger.info("[MERGE] \(entry.asr.stream.rawValue) [\(asrS)s-\(asrE)s] → '\(speaker.name)' (embedding similarity \(String(format: "%.3f", speaker.similarity))): \"\(entry.asr.text)\"")
+                    let resolved = TaggedSegment(
+                        stream: entry.asr.stream,
+                        speaker: speaker.name,
+                        start: entry.asr.start,
+                        end: entry.asr.end,
+                        text: entry.asr.text,
+                        embedding: embedding,
+                        isFinal: true
+                    )
+                    diarizationSegments.append(resolved)
+                    continue
+                }
+                // Embedding extracted but no match above threshold — fall through
             }
+
+            // 2. Check if extraction failed or timed out — fall to overlap / adjacency
+            let extractionDone = failedExtractions.contains(key)
+            let timedOut = age >= embeddingTimeoutDelay
+
+            if extractionDone || timedOut {
+                failedExtractions.remove(key)
+                // Try overlap-based
+                if let resolved = resolveASR(entry.asr) {
+                    commitResolved(asr: entry.asr, match: resolved)
+                } else {
+                    // Adjacency fallback
+                    let sameStream = diarizationSegments.filter {
+                        $0.stream == entry.asr.stream && !$0.text.isEmpty
+                    }
+                    let asrStartTime = entry.asr.start
+                    let asrEndTime = entry.asr.end
+                    let preceding = sameStream
+                        .filter { $0.end <= asrStartTime + 0.1 }
+                        .max { (a: TaggedSegment, b: TaggedSegment) in a.end < b.end }
+                    let following = sameStream
+                        .filter { $0.start >= asrEndTime - 0.1 }
+                        .min { (a: TaggedSegment, b: TaggedSegment) in a.start < b.start }
+                    resolveViaAdjacency(asr: entry.asr, preceding: preceding, following: following)
+                }
+                continue
+            }
+
+            // 3. Extraction still pending — trigger if not already in flight
+            if !pendingExtractions.contains(key) {
+                triggerEmbeddingExtraction(for: entry)
+            }
+            stillUnattributed.append(entry)
         }
         unattributedASR = stillUnattributed
 
@@ -256,10 +358,12 @@ final class MergeEngine: ObservableObject {
             } else {
                 // Pyannote mode: diarization exists for this stream but
                 // doesn't cover this ASR time range yet. Hold as unattributed
-                // ("Speaker-?") and retry on subsequent merge cycles.
-                unattributedASR.append(asr)
+                // ("Speaker-?") and immediately trigger embedding extraction.
+                let entry = UnattributedEntry(asr: asr, addedAt: Date())
+                unattributedASR.append(entry)
+                triggerEmbeddingExtraction(for: entry)
                 let diarCount = sameStreamDiar.count
-                logger.info("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] UNATTRIBUTED (\(diarCount) diar segs, waiting for diar to catch up): \"\(asr.text)\"")
+                logger.info("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] UNATTRIBUTED (\(diarCount) diar segs, extracting embedding): \"\(asr.text)\"")
             }
         }
         finalASRBuffer = deferred
@@ -269,13 +373,13 @@ final class MergeEngine: ObservableObject {
 
         // 3. Add unattributed ASR finals as "Speaker-?" rows so the user sees
         //    the text immediately even though speaker identity is pending.
-        for asr in unattributedASR {
+        for entry in unattributedASR {
             let placeholder = TaggedSegment(
-                stream: asr.stream,
+                stream: entry.asr.stream,
                 speaker: "Speaker-?",
-                start: asr.start,
-                end: asr.end,
-                text: asr.text,
+                start: entry.asr.start,
+                end: entry.asr.end,
+                text: entry.asr.text,
                 isFinal: true
             )
             output.append(placeholder)
@@ -341,6 +445,195 @@ final class MergeEngine: ObservableObject {
         }
 
         return result
+    }
+
+    // MARK: - Embedding Extraction & Matching
+
+    /// Trigger async embedding extraction for an unattributed entry.
+    /// Results are stored in `completedEmbeddings` (or `failedExtractions`)
+    /// and consumed on the next merge cycle.
+    private func triggerEmbeddingExtraction(for entry: UnattributedEntry) {
+        let key = entry.asr.start
+        // Skip if already in flight or permanently failed (no manager available)
+        guard !pendingExtractions.contains(key),
+              !failedExtractions.contains(key) else { return }
+
+        guard #available(macOS 26.0, *),
+              let manager = diarizationManagers[entry.asr.stream] else {
+            // No manager available — permanently failed, fall through on next cycle
+            failedExtractions.insert(key)
+            return
+        }
+
+        pendingExtractions.insert(key)
+        let asr = entry.asr
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let embedding = await manager.extractEmbedding(
+                startTime: asr.start,
+                endTime: asr.end
+            )
+            self.pendingExtractions.remove(key)
+
+            if embedding.isEmpty {
+                // Don't mark as permanently failed — the ring buffer may not
+                // have enough audio yet. The next merge cycle will re-trigger
+                // extraction once more audio has accumulated.
+                self.logger.info("[MERGE] Embedding extraction returned empty for \(asr.stream.rawValue) [\(String(format: "%.1f", asr.start))s-\(String(format: "%.1f", asr.end))s], will retry")
+            } else {
+                self.completedEmbeddings[key] = embedding
+            }
+            self.scheduleMerge()
+        }
+    }
+
+    /// Match an embedding against ALL known speakers on the same stream.
+    /// Returns the best speaker name and similarity, or nil if none exceed
+    /// the configurable `embeddingMatchThreshold`.
+    private func matchEmbeddingToSpeaker(
+        _ embedding: [Float],
+        stream: StreamType
+    ) -> (name: String, similarity: Float)? {
+        let threshold = embeddingMatchThreshold
+
+        // Collect one representative embedding per unique speaker on this stream.
+        var speakerEmbeddings: [String: [Float]] = [:]
+        for seg in diarizationSegments where seg.stream == stream && !seg.embedding.isEmpty {
+            if speakerEmbeddings[seg.speaker] == nil {
+                speakerEmbeddings[seg.speaker] = seg.embedding
+            }
+        }
+
+        var bestName: String?
+        var bestSim: Float = -1
+        for (speaker, emb) in speakerEmbeddings {
+            let sim = cosineSimilarity(embedding, emb)
+            if sim > bestSim {
+                bestSim = sim
+                bestName = speaker
+            }
+        }
+
+        guard let name = bestName, bestSim >= threshold else { return nil }
+        return (name: name, similarity: bestSim)
+    }
+
+    /// Adjacency fallback: attribute to the preceding segment's speaker if
+    /// the temporal gap is small enough. Otherwise commit as "Speaker-?".
+    private func resolveViaAdjacency(
+        asr: ASRSegment,
+        preceding: TaggedSegment?,
+        following: TaggedSegment?
+    ) {
+        let asrStart = String(format: "%.1f", asr.start)
+        let asrEnd = String(format: "%.1f", asr.end)
+        let streamName = asr.stream.rawValue
+
+        if let prev = preceding, (asr.start - prev.end) < maxAdjacencyGap {
+            logger.info("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] → '\(prev.speaker)' (adjacency, gap \(String(format: "%.1f", asr.start - prev.end))s): \"\(asr.text)\"")
+            let fallback = TaggedSegment(
+                stream: asr.stream,
+                speaker: prev.speaker,
+                start: asr.start,
+                end: asr.end,
+                text: asr.text,
+                isFinal: true
+            )
+            diarizationSegments.append(fallback)
+        } else if let next = following, (next.start - asr.end) < maxAdjacencyGap {
+            logger.info("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] → '\(next.speaker)' (adjacency-next, gap \(String(format: "%.1f", next.start - asr.end))s): \"\(asr.text)\"")
+            let fallback = TaggedSegment(
+                stream: asr.stream,
+                speaker: next.speaker,
+                start: asr.start,
+                end: asr.end,
+                text: asr.text,
+                isFinal: true
+            )
+            diarizationSegments.append(fallback)
+        } else {
+            // Permanent Speaker-? — no adjacency match either
+            logger.warning("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] → 'Speaker-?' (no adjacency match): \"\(asr.text)\"")
+            let fallback = TaggedSegment(
+                stream: asr.stream,
+                speaker: "Speaker-?",
+                start: asr.start,
+                end: asr.end,
+                text: asr.text,
+                isFinal: true
+            )
+            diarizationSegments.append(fallback)
+        }
+    }
+
+    /// Cosine similarity between two embedding vectors.
+    private func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
+        guard a.count == b.count, !a.isEmpty else { return 0 }
+        var dot: Float = 0
+        var normA: Float = 0
+        var normB: Float = 0
+        for i in 0..<a.count {
+            dot += a[i] * b[i]
+            normA += a[i] * a[i]
+            normB += b[i] * b[i]
+        }
+        let denom = sqrt(normA * normB)
+        return denom > 1e-6 ? dot / denom : 0
+    }
+
+    // MARK: - Flush (end-of-recording)
+
+    /// Resolve all remaining unattributed segments immediately.
+    /// Called before saving the transcript when recording stops.
+    ///
+    /// Priority: completed embedding → overlap → adjacency → permanent Speaker-?
+    func flushUnattributed() {
+        for entry in unattributedASR {
+            let key = entry.asr.start
+
+            // Try completed embedding first
+            if let embedding = completedEmbeddings.removeValue(forKey: key),
+               let speaker = matchEmbeddingToSpeaker(embedding, stream: entry.asr.stream) {
+                let asrS = String(format: "%.1f", entry.asr.start)
+                let asrE = String(format: "%.1f", entry.asr.end)
+                logger.info("[MERGE] \(entry.asr.stream.rawValue) [\(asrS)s-\(asrE)s] → '\(speaker.name)' (flush embedding \(String(format: "%.3f", speaker.similarity))): \"\(entry.asr.text)\"")
+                let resolved = TaggedSegment(
+                    stream: entry.asr.stream,
+                    speaker: speaker.name,
+                    start: entry.asr.start,
+                    end: entry.asr.end,
+                    text: entry.asr.text,
+                    embedding: embedding,
+                    isFinal: true
+                )
+                diarizationSegments.append(resolved)
+            } else if let resolved = resolveASR(entry.asr) {
+                // Try overlap-based
+                commitResolved(asr: entry.asr, match: resolved)
+            } else {
+                // Adjacency fallback
+                let sameStream = diarizationSegments.filter {
+                    $0.stream == entry.asr.stream && !$0.text.isEmpty
+                }
+                let flushStart = entry.asr.start
+                let flushEnd = entry.asr.end
+                let preceding = sameStream
+                    .filter { $0.end <= flushStart + 0.1 }
+                    .max { (a: TaggedSegment, b: TaggedSegment) in a.end < b.end }
+                let following = sameStream
+                    .filter { $0.start >= flushEnd - 0.1 }
+                    .min { (a: TaggedSegment, b: TaggedSegment) in a.start < b.start }
+                resolveViaAdjacency(asr: entry.asr, preceding: preceding, following: following)
+            }
+        }
+        unattributedASR.removeAll()
+        pendingExtractions.removeAll()
+        completedEmbeddings.removeAll()
+        failedExtractions.removeAll()
+
+        // Rebuild output
+        performMerge()
     }
 
     // MARK: - ASR Resolution Helpers
@@ -409,10 +702,16 @@ final class MergeEngine: ObservableObject {
         diarizationSegments.removeAll()
         finalASRBuffer.removeAll()
         unattributedASR.removeAll()
+        pendingExtractions.removeAll()
+        completedEmbeddings.removeAll()
+        failedExtractions.removeAll()
         livePartials.removeAll()
         mergedSegments.removeAll()
         speakerRenames.removeAll()
         identifiedSpeakers.removeAll()
         speakerDurations.removeAll()
+        if #available(macOS 26.0, *) {
+            diarizationManagers.removeAll()
+        }
     }
 }

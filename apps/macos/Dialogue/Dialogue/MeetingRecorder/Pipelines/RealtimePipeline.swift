@@ -59,6 +59,10 @@ final class RealtimePipeline: Sendable {
         // Diarization manager reads models from ModelPreloader internally.
         async let diarizationResult: () = diarizationManager.prepare()
 
+        // Register the diarization manager with MergeEngine so it can request
+        // embedding extractions for unattributed-segment resolution.
+        await MergeEngine.shared.registerDiarizationManager(diarizationManager, for: streamType)
+
         do {
             try await transcriptionManager.prepare(
                 assetsPreloaded: asrAssetsPreloaded,

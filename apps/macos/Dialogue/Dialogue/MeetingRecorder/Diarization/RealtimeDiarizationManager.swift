@@ -31,18 +31,25 @@ actor RealtimeDiarizationManager {
     private var sortformerDiarizer: SortformerDiarizer?
     private var frameDurationSeconds: Float = 0.08
 
-    // --- Sortformer Voice ID: hybrid embedding extraction ---
-    /// DiarizerManager used only for WeSpeaker embedding extraction in Sortformer mode.
-    /// Has NO pre-loaded speakers — produces raw, unbiased embeddings.
-    private var embeddingExtractor: DiarizerManager?
-    /// Continuous ring buffer of raw mic audio (16 kHz mono Float32) for embedding
-    /// extraction. Indexed by absolute sample offset so we can slice by time range.
+    // --- Shared ring buffer (both modes) ---
+    /// Continuous ring buffer of raw audio (16 kHz mono Float32) for on-demand
+    /// embedding extraction. Used by Sortformer Voice ID and by MergeEngine's
+    /// unattributed-segment resolution in Pyannote mode.
     private var audioRingBuffer: [Float] = []
     /// Sample offset of the first sample in `audioRingBuffer` (how many samples
     /// were trimmed from the front). Used to convert absolute time → buffer index.
     private var ringBufferStartOffset: Int = 0
     /// Maximum ring buffer size: 60 seconds × 16,000 = 960,000 samples.
     private let maxRingBufferSamples: Int = 960_000
+
+    // --- Clean embedding extractor (both modes) ---
+    /// DiarizerManager used only for WeSpeaker embedding extraction.
+    /// Has NO pre-loaded speakers — produces raw, unbiased embeddings.
+    /// In Sortformer mode: used for hybrid Voice ID.
+    /// In Pyannote mode: used by MergeEngine for unattributed segment resolution.
+    private var embeddingExtractor: DiarizerManager?
+
+    // --- Sortformer Voice ID state ---
     /// Per-speaker accumulated speech duration (seconds) from Sortformer segments.
     private var sortformerSpeakerDurations: [Int: TimeInterval] = [:]
     /// Set of speaker slot indices that have already been identified via VoiceID.
@@ -216,6 +223,10 @@ actor RealtimeDiarizationManager {
         isFirstChunk = true
 
         logger.info("PyannoteManager ready for \(self.streamType.rawValue) stream")
+
+        // Set up a clean embedding extractor (no enrolled speakers) for
+        // MergeEngine's unattributed-segment resolution. Non-blocking.
+        Task { await self.prepareEmbeddingExtractor() }
     }
 
     /// Convert VoiceID enrolled voices to FluidAudio `Speaker` objects and
@@ -283,9 +294,7 @@ actor RealtimeDiarizationManager {
 
         // Append raw audio to the ring buffer (before Sortformer processing,
         // so the audio is available when segments arrive).
-        if embeddingExtractor != nil {
-            appendToRingBuffer(samples)
-        }
+        appendToRingBuffer(samples)
 
         do {
             if let result = try diarizer.processSamples(samples) {
@@ -512,6 +521,10 @@ actor RealtimeDiarizationManager {
             isFirstChunk = false
         }
 
+        // Fill the shared ring buffer so MergeEngine can request embedding
+        // extraction for unattributed segments.
+        appendToRingBuffer(samples)
+
         sampleBuffer.append(contentsOf: samples)
 
         let chunkSampleCount = Int(mode.chunkSeconds * 16_000)
@@ -559,8 +572,6 @@ actor RealtimeDiarizationManager {
             sortformerDiarizer = nil
             embeddingExtractor?.cleanup()
             embeddingExtractor = nil
-            audioRingBuffer.removeAll()
-            ringBufferStartOffset = 0
             sortformerSpeakerDurations.removeAll()
             identifiedSortformerSlots.removeAll()
             sortformerSlotEmbeddings.removeAll()
@@ -569,13 +580,69 @@ actor RealtimeDiarizationManager {
         case .pyannoteStreaming:
             pyannoteManager?.cleanup()
             pyannoteManager = nil
+            embeddingExtractor?.cleanup()
+            embeddingExtractor = nil
             sampleBuffer.removeAll()
         }
+
+        // Shared ring buffer cleanup (both modes)
+        audioRingBuffer.removeAll()
+        ringBufferStartOffset = 0
 
         totalSamplesProcessed = 0
         isFirstChunk = true
         isFirstDiarChunk = true
         lastEmittedTime = 0
+    }
+
+    // MARK: - On-Demand Embedding Extraction (public)
+
+    /// Extract a WeSpeaker embedding for audio in the given time range.
+    ///
+    /// Used by `MergeEngine` to resolve unattributed ASR segments by comparing
+    /// the unknown segment's embedding against neighbouring speakers' embeddings.
+    ///
+    /// The Pyannote segmentation model requires 10-second chunks (160,000 samples
+    /// at 16 kHz). If the requested range is shorter, it is expanded symmetrically
+    /// to 10 seconds. The dominant speaker (most total speech duration) from the
+    /// extraction result is returned.
+    ///
+    /// Returns an empty array if the ring buffer doesn't cover the requested range
+    /// or if the embedding extractor is unavailable.
+    func extractEmbedding(startTime: TimeInterval, endTime: TimeInterval) async -> [Float] {
+        guard let extractor = embeddingExtractor else {
+            logger.info("extractEmbedding: no extractor available for \(self.streamType.rawValue)")
+            return []
+        }
+
+        // Expand to minimum 10 seconds for Pyannote segmentation model.
+        // Expand backwards (into the past) first since future audio may not
+        // be in the ring buffer yet when extraction is triggered near real-time.
+        let minSliceDuration: TimeInterval = 10.0
+        var sliceStart = startTime
+        var sliceEnd = endTime
+        let duration = sliceEnd - sliceStart
+        if duration < minSliceDuration {
+            let deficit = minSliceDuration - duration
+            sliceStart = max(0, sliceStart - deficit)
+            sliceEnd = max(sliceEnd, sliceStart + minSliceDuration)
+        }
+
+        guard let audio = sliceAudioFromRingBuffer(startTime: sliceStart, endTime: sliceEnd) else {
+            let ss = String(format: "%.1f", sliceStart)
+            let se = String(format: "%.1f", sliceEnd)
+            logger.info("extractEmbedding: ring buffer doesn't cover [\(ss)s-\(se)s] for \(self.streamType.rawValue)")
+            return []
+        }
+
+        do {
+            let result = try extractor.performCompleteDiarization(audio)
+            let embedding = pickExtractedEmbedding(from: result, extractor: extractor)
+            return embedding ?? []
+        } catch {
+            logger.warning("extractEmbedding failed for \(self.streamType.rawValue): \(error.localizedDescription)")
+            return []
+        }
     }
 
     // MARK: - Sortformer Conversion

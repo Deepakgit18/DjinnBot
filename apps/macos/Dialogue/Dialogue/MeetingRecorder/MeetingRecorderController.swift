@@ -143,6 +143,11 @@ final class MeetingRecorderController: ObservableObject {
         durationTimer?.invalidate()
         durationTimer = nil
 
+        // Flush any remaining unattributed segments before stopping pipelines.
+        // This resolves "Speaker-?" entries via adjacency before diarization
+        // managers are cleaned up.
+        mergeEngine.flushUnattributed()
+
         // Stop audio capture
         let wavURL = await dualEngine.stop()
 
