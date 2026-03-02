@@ -171,7 +171,11 @@ final class MergeEngine: ObservableObject {
     /// Match finalized ASR text to diarization segments by temporal overlap,
     /// then append live partials at the end.
     private func performMerge() {
-        // 1. Merge finalized ASR results into diarization segments
+        // 1. Merge finalized ASR results into diarization segments.
+        //    ASR finals that arrive before any diarization segments exist
+        //    are kept in the buffer for retry on the next merge cycle.
+        var deferred: [ASRSegment] = []
+
         for asr in finalASRBuffer {
             // Find all diarization segments that overlap this ASR result
             let candidates = diarizationSegments.enumerated().filter {
@@ -192,8 +196,25 @@ final class MergeEngine: ObservableObject {
                 let me = String(format: "%.1f", matched.end)
                 let msg = "[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] → \(matched.speaker) [\(ms)s-\(me)s] overlap=\(overlap)s: \"\(asr.text)\""
                 logger.info("\(msg)")
-                diarizationSegments[index].text = asr.text
-                diarizationSegments[index].isFinal = true
+
+                if diarizationSegments[index].text.isEmpty {
+                    // First ASR final for this diarization segment — write in place.
+                    diarizationSegments[index].text = asr.text
+                    diarizationSegments[index].isFinal = true
+                } else {
+                    // Diarization segment already has text from a previous ASR final.
+                    // Create a new segment so each ASR final gets its own output row.
+                    let extra = TaggedSegment(
+                        stream: asr.stream,
+                        speaker: matched.speaker,
+                        start: asr.start,
+                        end: asr.end,
+                        text: asr.text,
+                        embedding: matched.embedding,
+                        isFinal: true
+                    )
+                    diarizationSegments.append(extra)
+                }
             } else {
                 let sameStreamDiar = diarizationSegments.filter { $0.stream == asr.stream }
                 let diarCount = sameStreamDiar.count
@@ -201,31 +222,40 @@ final class MergeEngine: ObservableObject {
                 let nearestDiar = sameStreamDiar.min { (a: TaggedSegment, b: TaggedSegment) -> Bool in
                     abs(a.start - asrStartTime) < abs(b.start - asrStartTime)
                 }
-                // Fallback: use the nearest diarization segment's speaker if
-                // available, so that VoiceID renames carry through even when
-                // timestamps don't perfectly overlap.
-                let fallbackSpeaker: String
-                if let nearest = nearestDiar {
-                    fallbackSpeaker = nearest.speaker
-                    let ns = String(format: "%.1f", nearest.start)
-                    let ne = String(format: "%.1f", nearest.end)
-                    logger.warning("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] NO OVERLAP (\(diarCount) diar segs, nearest: [\(ns)s-\(ne)s]) → using '\(fallbackSpeaker)': \"\(asr.text)\"")
+
+                if diarCount == 0 {
+                    // No diarization segments yet for this stream. Diarization
+                    // may still be warming up (Pyannote needs a full 10s chunk).
+                    // Defer this ASR final for retry on the next merge cycle.
+                    deferred.append(asr)
+                    logger.info("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] DEFERRED (no diar segs yet): \"\(asr.text)\"")
                 } else {
-                    fallbackSpeaker = "\(asr.stream.rawValue)-Unknown"
-                    logger.warning("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] NO DIAR SEGS: \"\(asr.text)\"")
+                    // Fallback: use the nearest diarization segment's speaker if
+                    // available, so that VoiceID renames carry through even when
+                    // timestamps don't perfectly overlap.
+                    let fallbackSpeaker: String
+                    if let nearest = nearestDiar {
+                        fallbackSpeaker = nearest.speaker
+                        let ns = String(format: "%.1f", nearest.start)
+                        let ne = String(format: "%.1f", nearest.end)
+                        logger.warning("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] NO OVERLAP (\(diarCount) diar segs, nearest: [\(ns)s-\(ne)s]) → using '\(fallbackSpeaker)': \"\(asr.text)\"")
+                    } else {
+                        fallbackSpeaker = "\(asr.stream.rawValue)-Unknown"
+                        logger.warning("[MERGE] \(streamName) [\(asrStart)s-\(asrEnd)s] NO DIAR SEGS: \"\(asr.text)\"")
+                    }
+                    let fallback = TaggedSegment(
+                        stream: asr.stream,
+                        speaker: fallbackSpeaker,
+                        start: asr.start,
+                        end: asr.end,
+                        text: asr.text,
+                        isFinal: true
+                    )
+                    diarizationSegments.append(fallback)
                 }
-                let fallback = TaggedSegment(
-                    stream: asr.stream,
-                    speaker: fallbackSpeaker,
-                    start: asr.start,
-                    end: asr.end,
-                    text: asr.text,
-                    isFinal: true
-                )
-                diarizationSegments.append(fallback)
             }
         }
-        finalASRBuffer.removeAll()
+        finalASRBuffer = deferred
 
         // 2. Build the output: collapsed diarization segments + live partials
         var output = collapseAdjacentSegments(diarizationSegments)
