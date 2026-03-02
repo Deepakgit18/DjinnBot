@@ -352,16 +352,29 @@ actor RealtimeDiarizationManager {
 
         guard sortformerSpeakerDurations[slotIndex, default: 0] >= minDurationForExtraction else { return }
 
-        // Slice a contiguous window from the earliest to latest segment for
-        // this speaker. The Pyannote extraction pass will re-segment internally
-        // and extract embeddings only from the speech portions.
+        // Slice a contiguous window covering the speaker's segments from the
+        // ring buffer. The Pyannote segmentation model expects 10-second chunks
+        // (160,000 samples at 16 kHz). Shorter audio gets zero-padded, which
+        // corrupts segmentation masks and produces garbage embeddings. Ensure
+        // the slice is at least 10 seconds by expanding the window.
         let speakerLabel = segment.speaker
         let allSegments = sortformerSlotSegments[slotIndex] ?? [segment]
         guard let earliest = allSegments.min(by: { $0.start < $1.start }),
               let latest = allSegments.max(by: { $0.end < $1.end }) else { return }
 
-        guard let audio = sliceAudioFromRingBuffer(startTime: earliest.start, endTime: latest.end) else {
-            logger.info("Sortformer VoiceID: ring buffer doesn't cover [\(earliest.start)s-\(latest.end)s] for slot \(slotIndex)")
+        let minSliceDuration: TimeInterval = 10.0
+        var sliceStart = earliest.start
+        var sliceEnd = latest.end
+        let sliceDuration = sliceEnd - sliceStart
+        if sliceDuration < minSliceDuration {
+            // Expand symmetrically, clamping to available ring buffer range.
+            let deficit = minSliceDuration - sliceDuration
+            sliceStart = max(0, sliceStart - deficit / 2)
+            sliceEnd = sliceStart + max(sliceDuration, minSliceDuration)
+        }
+
+        guard let audio = sliceAudioFromRingBuffer(startTime: sliceStart, endTime: sliceEnd) else {
+            logger.info("Sortformer VoiceID: ring buffer doesn't cover [\(sliceStart)s-\(sliceEnd)s] for slot \(slotIndex)")
             return
         }
 
@@ -433,23 +446,48 @@ actor RealtimeDiarizationManager {
         }
     }
 
-    /// Pick the first non-empty embedding extracted from the audio.
+    /// Pick the embedding of the **dominant speaker** (most total speech
+    /// duration) from the extraction result.
     ///
-    /// The extractor has no pre-loaded speakers, so every embedding in
-    /// the result was genuinely extracted from the audio we fed in.
+    /// The ring buffer slice sent to the extractor contains the full time
+    /// span between the earliest and latest Sortformer segments for a
+    /// speaker slot. This span includes silence and gaps where the
+    /// extractor may detect noise or secondary speakers. Returning the
+    /// first dictionary entry would be arbitrary — we must select the
+    /// speaker with the most speech to get a representative embedding.
     private func pickExtractedEmbedding(
         from result: DiarizationResult,
         extractor: DiarizerManager
     ) -> [Float]? {
-        // 1. Try speakerDatabase first (populated when debugMode=true).
+        // Find the speaker with the most accumulated speech duration
+        // from the extraction result's segments.
+        var durationBySpeaker: [String: Float] = [:]
+        for seg in result.segments {
+            durationBySpeaker[seg.speakerId, default: 0] += seg.durationSeconds
+        }
+
+        // Sort by duration descending and return the dominant speaker's embedding.
+        let ranked = durationBySpeaker.sorted { $0.value > $1.value }
+
+        // 1. Try speakerDatabase (populated when debugMode=true).
         if let db = result.speakerDatabase {
-            for (_, embedding) in db where !embedding.isEmpty {
-                return embedding
+            for (speakerId, _) in ranked {
+                if let embedding = db[speakerId], !embedding.isEmpty {
+                    return embedding
+                }
             }
         }
 
-        // 2. Fall back to SpeakerManager speakers.
-        for (_, speaker) in extractor.speakerManager.getAllSpeakers() {
+        // 2. Fall back to SpeakerManager, still preferring the dominant speaker.
+        let allSpeakers = extractor.speakerManager.getAllSpeakers()
+        for (speakerId, _) in ranked {
+            if let speaker = allSpeakers[speakerId], !speaker.currentEmbedding.isEmpty {
+                return speaker.currentEmbedding
+            }
+        }
+
+        // 3. Last resort: any non-empty embedding.
+        for (_, speaker) in allSpeakers {
             if !speaker.currentEmbedding.isEmpty {
                 return speaker.currentEmbedding
             }
