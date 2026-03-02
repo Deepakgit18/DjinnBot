@@ -82,18 +82,24 @@ public final class VoiceID {
     private let storageURL: URL
     private let logger = Logger(subsystem: "bot.djinn.app.dialog", category: "VoiceID")
 
-    /// Cosine similarity threshold for a positive match.
+    /// Cosine similarity threshold for a positive speaker match.
     /// Range 0.50–0.90; default 0.65. Configurable in Settings.
+    ///
+    /// Used consistently across both diarization modes:
+    /// - **Sortformer**: VoiceID compares embeddings directly using this value.
+    /// - **Pyannote**: converted to cosine distance (`1 - threshold`) and set
+    ///   on `SpeakerManager.speakerThreshold` so the SDK's in-pipeline matching
+    ///   uses the same strictness.
     public var similarityThreshold: Float {
         get { Float(UserDefaults.standard.double(forKey: "voiceID_similarityThreshold")).nonZeroOrDefault(0.65) }
         set { UserDefaults.standard.set(Double(newValue), forKey: "voiceID_similarityThreshold") }
     }
 
-    /// Clustering threshold passed to DiarizerConfig during enrollment embedding extraction.
-    /// Range 0.50–0.90; default 0.65. Configurable in Settings.
-    public var clusteringThreshold: Float {
-        get { Float(UserDefaults.standard.double(forKey: "voiceID_clusteringThreshold")).nonZeroOrDefault(0.65) }
-        set { UserDefaults.standard.set(Double(newValue), forKey: "voiceID_clusteringThreshold") }
+    /// The equivalent cosine distance for the user's similarity threshold.
+    /// Use this when configuring FluidAudio's `SpeakerManager.speakerThreshold`
+    /// (which operates on distance where 0 = identical, 2 = opposite).
+    public var speakerDistanceThreshold: Float {
+        1.0 - similarityThreshold
     }
 
     private init() {
@@ -124,8 +130,11 @@ public final class VoiceID {
             models = try await DiarizerModels.downloadIfNeeded()
         }
 
+        // Use the SDK default clustering threshold (0.7) for enrollment's
+        // internal diarization. The clustering threshold controls segment
+        // grouping; it does not need to match the speaker recognition threshold.
         let config = DiarizerConfig(
-            clusteringThreshold: clusteringThreshold,
+            clusteringThreshold: 0.7,
             minSpeechDuration: 1.0,
             minSilenceGap: 0.5,
             debugMode: true,

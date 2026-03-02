@@ -151,7 +151,7 @@ actor RealtimeDiarizationManager {
             }
 
             let extractorConfig = DiarizerConfig(
-                clusteringThreshold: VoiceID.shared.clusteringThreshold,
+                clusteringThreshold: 0.7,  // SDK default for internal segment clustering
                 minSpeechDuration: 1.0,
                 minSilenceGap: 0.5,
                 debugMode: true,
@@ -189,7 +189,7 @@ actor RealtimeDiarizationManager {
         }
 
         let config = DiarizerConfig(
-            clusteringThreshold: 0.7,
+            clusteringThreshold: 0.7,  // SDK default for internal segment clustering
             minSpeechDuration: 1.0,
             minSilenceGap: 0.5,
             debugMode: true,           // Required: speakerDatabase is only returned when debugMode=true
@@ -197,6 +197,13 @@ actor RealtimeDiarizationManager {
         )
         let diarizer = DiarizerManager(config: config)
         diarizer.initialize(models: models)
+
+        // Override SpeakerManager's speaker matching threshold to match the
+        // user's Recognition Threshold from Settings. The SDK derives
+        // speakerThreshold from clusteringThreshold * 1.2 by default, which
+        // produces a different strictness level. We set it directly to
+        // (1 - similarity) so both modes use an equivalent threshold.
+        diarizer.speakerManager.speakerThreshold = VoiceID.shared.speakerDistanceThreshold
 
         // Load enrolled voices from VoiceID into SpeakerManager so that
         // known speakers are recognised from the first chunk. VoiceID owns

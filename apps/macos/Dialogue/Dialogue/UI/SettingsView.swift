@@ -13,13 +13,9 @@ struct SettingsView: View {
     // Diarization engine
     @AppStorage("diarizationMode") private var diarizationMode: DiarizationMode = .pyannoteStreaming
 
-    // Voice ID thresholds (0.65 default when UserDefaults key is unset / zero)
+    // Voice ID threshold (0.65 default when UserDefaults key is unset / zero)
     @State private var similarityThreshold: Double = {
         let v = UserDefaults.standard.double(forKey: "voiceID_similarityThreshold")
-        return v == 0 ? 0.65 : v
-    }()
-    @State private var clusteringThreshold: Double = {
-        let v = UserDefaults.standard.double(forKey: "voiceID_clusteringThreshold")
         return v == 0 ? 0.65 : v
     }()
 
@@ -184,7 +180,7 @@ struct SettingsView: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Text("Similarity Threshold")
+                        Text("Recognition Threshold")
                         Spacer()
                         Text(String(format: "%.2f", similarityThreshold))
                             .monospacedDigit()
@@ -194,24 +190,7 @@ struct SettingsView: View {
                         .onChange(of: similarityThreshold) { _, newValue in
                             UserDefaults.standard.set(newValue, forKey: "voiceID_similarityThreshold")
                         }
-                    Text("How closely a voice must match an enrolled speaker to be identified. In Pyannote mode, embeddings are compared every chunk. In Sortformer mode, embeddings are extracted after ~3 seconds of speech per speaker using a background Pyannote pass.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Clustering Threshold")
-                        Spacer()
-                        Text(String(format: "%.2f", clusteringThreshold))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                    Slider(value: $clusteringThreshold, in: 0.50...0.90, step: 0.01)
-                        .onChange(of: clusteringThreshold) { _, newValue in
-                            UserDefaults.standard.set(newValue, forKey: "voiceID_clusteringThreshold")
-                        }
-                    Text("How aggressively speech segments are grouped into a single speaker during voice enrollment and Sortformer embedding extraction. A lower value merges more segments together; a higher value keeps them separate. Used in both modes: during enrollment (Pyannote) and during background embedding extraction (Sortformer).")
+                    Text("Minimum cosine similarity (0 = unrelated, 1 = identical) for a voice to match an enrolled speaker. Applied consistently in both diarization modes: directly in Sortformer, and converted to the equivalent cosine distance for Pyannote's SpeakerManager.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }

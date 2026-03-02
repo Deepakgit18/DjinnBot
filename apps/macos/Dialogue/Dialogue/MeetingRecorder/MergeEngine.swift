@@ -113,8 +113,21 @@ final class MergeEngine: ObservableObject {
 
     /// Accumulate speech duration for a speaker and attempt identification
     /// once enough audio has been collected.
+    ///
+    /// Only active in **Sortformer** mode. In Pyannote mode, SpeakerManager
+    /// handles identification natively via `initializeKnownSpeakers` — the
+    /// embeddings it returns are the enrolled embeddings themselves, so
+    /// running VoiceID on top would always yield 1.000 similarity (comparing
+    /// a vector against itself) and mask SpeakerManager's actual quality.
     private func attemptVoiceIdentification(for segment: TaggedSegment) {
         let key = segment.speaker
+
+        // In Pyannote mode, SpeakerManager already identifies known speakers
+        // in-pipeline (Layer 1). VoiceID is only needed for Sortformer's
+        // hybrid embedding extraction path.
+        let modeRaw = UserDefaults.standard.string(forKey: "diarizationMode") ?? ""
+        let mode = DiarizationMode(rawValue: modeRaw) ?? .pyannoteStreaming
+        guard mode == .sortformer else { return }
 
         // Skip if already identified or if VoiceID has no enrolled voices
         guard !identifiedSpeakers.contains(key),
