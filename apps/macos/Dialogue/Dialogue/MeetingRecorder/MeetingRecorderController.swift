@@ -101,6 +101,9 @@ final class MeetingRecorderController: ObservableObject {
                 .receive(on: RunLoop.main)
                 .assign(to: &$mergedSegments)
 
+            // Start periodic refinement (speaker merging, re-attribution, enrolled voice matching)
+            mergeEngine.startRefinementTimer()
+
             // Start duration timer
             recordingStartDate = Date()
             durationTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
