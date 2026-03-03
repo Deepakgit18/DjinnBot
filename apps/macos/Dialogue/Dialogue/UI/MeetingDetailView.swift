@@ -199,6 +199,13 @@ struct MeetingDetailView: View {
 
     // MARK: - Transcript List
 
+    /// All unique speaker names in the transcript, excluding enrolled voice IDs.
+    private var callSpeakers: [String] {
+        let enrolledIDs = Set(VoiceID.shared.allEnrolledVoices().map(\.userID))
+        let unique = Set(entries.map(\.speaker))
+        return unique.filter { !enrolledIDs.contains($0) }.sorted()
+    }
+
     private var transcriptList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 2) {
@@ -209,6 +216,7 @@ struct MeetingDetailView: View {
                         recordingURL: meeting.recordingURL,
                         hasRecording: hasRecording,
                         enrolledVoices: VoiceID.shared.allEnrolledVoices(),
+                        callSpeakers: callSpeakers,
                         onEnroll: { e in
                             selectedEntry = e
                             enrollName = ""
@@ -613,6 +621,8 @@ private struct MeetingTranscriptRow: View {
     let recordingURL: URL
     let hasRecording: Bool
     let enrolledVoices: [VoiceEmbedding]
+    /// Unique speaker names from the current call (non-enrolled).
+    let callSpeakers: [String]
 
     /// Callbacks for context menu actions.
     let onEnroll: (TranscriptEntry) -> Void
@@ -664,48 +674,98 @@ private struct MeetingTranscriptRow: View {
 
     // MARK: - Context Menu
 
+    /// Minimum segment duration (seconds) for enrollment.
+    private static let minEnrollmentDuration: TimeInterval = 10.0
+
+    /// Non-enrolled call speakers eligible for reassignment (excludes current speaker).
+    private var reassignableCallSpeakers: [String] {
+        callSpeakers.filter { $0 != entry.speaker }
+    }
+
+    /// Whether any reassignment targets exist (enrolled or call speakers).
+    private var hasReassignTargets: Bool {
+        !enrolledVoices.isEmpty || !reassignableCallSpeakers.isEmpty
+    }
+
     @ViewBuilder
     private var contextMenuContent: some View {
         if hasRecording {
-            Button("Enroll as New Speaker...") {
-                onEnroll(entry)
+            let segDuration = entry.end - entry.start
+            if segDuration >= Self.minEnrollmentDuration {
+                Button("Enroll as New Speaker...") {
+                    onEnroll(entry)
+                }
+            } else {
+                Button("Enroll as New Speaker... (need \(Int(ceil(Self.minEnrollmentDuration)))s+)") {}
+                    .disabled(true)
             }
 
             Divider()
 
-            if !enrolledVoices.isEmpty {
+            if hasReassignTargets {
                 Menu("Reassign to") {
-                    ForEach(enrolledVoices) { voice in
-                        Button(voice.userID) {
-                            onReassign(entry, voice.userID)
+                    // Enrolled voices first
+                    if !enrolledVoices.isEmpty {
+                        ForEach(enrolledVoices) { voice in
+                            Button(voice.userID) {
+                                onReassign(entry, voice.userID)
+                            }
+                            .disabled(voice.userID == entry.speaker)
                         }
-                        .disabled(voice.userID == entry.speaker)
                     }
-                }
 
-                Menu("Enhance Voice") {
-                    ForEach(enrolledVoices) { voice in
-                        Button(voice.userID) {
-                            onEnhance(entry, voice.userID)
+                    // Call speakers (non-enrolled)
+                    if !reassignableCallSpeakers.isEmpty {
+                        if !enrolledVoices.isEmpty {
+                            Divider()
+                        }
+                        ForEach(reassignableCallSpeakers, id: \.self) { speaker in
+                            Button(speaker) {
+                                onReassign(entry, speaker)
+                            }
                         }
                     }
                 }
             } else {
-                // No enrolled voices — show disabled hints
                 Button("Reassign to") {}
                     .disabled(true)
-                Button("Enhance Voice") {}
-                    .disabled(true)
+            }
+
+            if !enrolledVoices.isEmpty {
+                Menu("Enhance Voice") {
+                    ForEach(enrolledVoices) { voice in
+                        if segDuration >= Self.minEnrollmentDuration {
+                            Button(voice.userID) {
+                                onEnhance(entry, voice.userID)
+                            }
+                        } else {
+                            Button("\(voice.userID) (need \(Int(ceil(Self.minEnrollmentDuration)))s+)") {}
+                                .disabled(true)
+                        }
+                    }
+                }
             }
         } else {
-            // No recording — only allow reassignment if voices exist
-            if !enrolledVoices.isEmpty {
+            // No recording — only allow reassignment
+            if hasReassignTargets {
                 Menu("Reassign to") {
-                    ForEach(enrolledVoices) { voice in
-                        Button(voice.userID) {
-                            onReassign(entry, voice.userID)
+                    if !enrolledVoices.isEmpty {
+                        ForEach(enrolledVoices) { voice in
+                            Button(voice.userID) {
+                                onReassign(entry, voice.userID)
+                            }
+                            .disabled(voice.userID == entry.speaker)
                         }
-                        .disabled(voice.userID == entry.speaker)
+                    }
+                    if !reassignableCallSpeakers.isEmpty {
+                        if !enrolledVoices.isEmpty {
+                            Divider()
+                        }
+                        ForEach(reassignableCallSpeakers, id: \.self) { speaker in
+                            Button(speaker) {
+                                onReassign(entry, speaker)
+                            }
+                        }
                     }
                 }
             }
