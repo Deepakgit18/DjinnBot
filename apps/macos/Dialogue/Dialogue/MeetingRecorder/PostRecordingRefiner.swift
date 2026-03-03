@@ -248,10 +248,15 @@ final class PostRecordingRefiner {
         // Sort by start time across all streams
         allSegments.sort { $0.start < $1.start }
 
-        let originalCount = liveSegments.filter { $0.isFinal && $0.hasSubstantialContent }.count
-        logger.info("[REFINE] Transcript built: \(allSegments.count) segments from scratch (was \(originalCount) live segments)")
+        // Collapse adjacent segments from the same speaker into single segments.
+        // The offline pipeline often produces short fragments for the same speaker
+        // that should be presented as a single continuous block in the final transcript.
+        let collapsed = collapseAdjacentSameSpeaker(allSegments)
 
-        return allSegments
+        let originalCount = liveSegments.filter { $0.isFinal && $0.hasSubstantialContent }.count
+        logger.info("[REFINE] Transcript built: \(collapsed.count) segments (\(allSegments.count) before collapse, was \(originalCount) live segments)")
+
+        return collapsed
     }
 
     // MARK: - Offline ASR
@@ -595,6 +600,47 @@ final class PostRecordingRefiner {
         }
 
         return mapping
+    }
+
+    // MARK: - Collapsing Adjacent Segments
+
+    /// Collapse adjacent segments from the same speaker into single segments.
+    ///
+    /// Adjacent segments with the same speaker and stream that are within
+    /// 3 seconds of each other are merged: text concatenated with space,
+    /// time range extended to cover both, word timings combined.
+    /// Never collapses "Speaker-?" segments (unattributed placeholders).
+    private func collapseAdjacentSameSpeaker(_ segments: [TaggedSegment]) -> [TaggedSegment] {
+        guard !segments.isEmpty else { return [] }
+
+        var result: [TaggedSegment] = []
+        var current = segments[0]
+
+        for i in 1..<segments.count {
+            let next = segments[i]
+
+            // Merge if same speaker, same stream, gap < 3s, and not unattributed
+            if next.speaker == current.speaker &&
+               next.stream == current.stream &&
+               current.speaker != "Speaker-?" &&
+               (next.start - current.end) < 3.0 {
+                current = TaggedSegment(
+                    stream: current.stream,
+                    speaker: current.speaker,
+                    start: current.start,
+                    end: next.end,
+                    text: current.text + " " + next.text,
+                    isFinal: true,
+                    wordTimings: current.wordTimings + next.wordTimings
+                )
+            } else {
+                result.append(current)
+                current = next
+            }
+        }
+        result.append(current)
+
+        return result
     }
 
     // MARK: - Utilities

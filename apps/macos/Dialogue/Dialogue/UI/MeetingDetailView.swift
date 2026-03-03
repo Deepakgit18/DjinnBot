@@ -7,8 +7,9 @@ import SFBAudioEngine
 ///
 /// Shows the meeting name, date, transport controls (play/pause/stop + seek bar),
 /// and a scrollable list of transcript entries with speaker labels, timestamps,
-/// per-segment playback buttons, and a context menu for voice enrollment,
-/// speaker reassignment, and enrollment enhancement from segment audio.
+/// per-segment playback buttons, and a fully custom context menu on each segment's
+/// text for voice enrollment, speaker reassignment, enrollment enhancement,
+/// text editing, and inline split & reassign.
 struct MeetingDetailView: View {
     let meeting: SavedMeeting
     @State private var entries: [TranscriptEntry] = []
@@ -26,13 +27,16 @@ struct MeetingDetailView: View {
 
     // MARK: - Context Menu State
 
-    /// The entry selected for enrollment / enhance operations.
+    /// The entry selected for enrollment operations.
     @State private var selectedEntry: TranscriptEntry?
 
     /// Enroll-from-segment sheet state.
     @State private var showEnrollSheet = false
     @State private var enrollName = ""
     @State private var enrollColorIndex: Int? = nil
+
+    /// Edit sheet — driven by item so the text is always populated correctly.
+    @State private var editingEntry: TranscriptEntry?
 
     /// Processing overlay.
     @State private var isProcessing = false
@@ -83,7 +87,6 @@ struct MeetingDetailView: View {
         .onAppear { loadTranscript() }
         .onDisappear { player.stop() }
         .onChange(of: refinementProgress.state) { _, newState in
-            // Reload transcript + re-check recording after refinement finishes.
             if case .complete = newState {
                 loadTranscript()
             }
@@ -95,6 +98,11 @@ struct MeetingDetailView: View {
         }
         .sheet(isPresented: $showEnrollSheet) {
             enrollmentSheet
+        }
+        .sheet(item: $editingEntry) { entry in
+            EditSegmentSheet(entry: entry) { newText in
+                saveEdit(entryID: entry.id, newText: newText)
+            }
         }
     }
 
@@ -129,7 +137,6 @@ struct MeetingDetailView: View {
 
     private var transportBar: some View {
         VStack(spacing: 6) {
-            // Seek bar
             HStack(spacing: 8) {
                 Text(formatTime(player.currentTime))
                     .font(.system(.caption, design: .monospaced))
@@ -150,9 +157,7 @@ struct MeetingDetailView: View {
                     .frame(width: 48, alignment: .leading)
             }
 
-            // Buttons
             HStack(spacing: 16) {
-                // Play / Pause
                 Button {
                     player.togglePlayPause(url: meeting.recordingURL)
                 } label: {
@@ -162,7 +167,6 @@ struct MeetingDetailView: View {
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.space, modifiers: [])
 
-                // Stop
                 Button {
                     player.stop()
                 } label: {
@@ -172,20 +176,16 @@ struct MeetingDetailView: View {
                 .buttonStyle(.borderless)
                 .disabled(!player.isPlaying && !player.isPaused)
 
-                // Skip backward 10s
                 Button {
-                    let target = max(0, player.currentTime - 10)
-                    player.seek(to: target)
+                    player.seek(to: max(0, player.currentTime - 10))
                 } label: {
                     Image(systemName: "gobackward.10")
                         .font(.callout)
                 }
                 .buttonStyle(.borderless)
 
-                // Skip forward 10s
                 Button {
-                    let target = min(player.totalTime, player.currentTime + 10)
-                    player.seek(to: target)
+                    player.seek(to: min(player.totalTime, player.currentTime + 10))
                 } label: {
                     Image(systemName: "goforward.10")
                         .font(.callout)
@@ -223,11 +223,17 @@ struct MeetingDetailView: View {
                             enrollColorIndex = nil
                             showEnrollSheet = true
                         },
-                        onReassign: { e, userID in
+                        onReassign: { _, userID in
                             reassignEntry(at: index, to: userID)
                         },
                         onEnhance: { e, userID in
                             Task { await enhanceVoice(entry: e, userID: userID) }
+                        },
+                        onEdit: { e in
+                            editingEntry = e
+                        },
+                        onSplitReassign: { e, range, speaker in
+                            splitEntry(entryID: e.id, range: range, newSpeaker: speaker)
                         }
                     )
                 }
@@ -255,7 +261,6 @@ struct MeetingDetailView: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 250)
 
-            // Color picker grid
             VStack(alignment: .leading, spacing: 4) {
                 Text("Speaker Color")
                     .font(.caption)
@@ -297,7 +302,6 @@ struct MeetingDetailView: View {
         .frame(width: 340)
     }
 
-    /// Color indices already reserved by enrolled voices.
     private var reservedColorIndices: Set<Int> {
         Set(VoiceID.shared.allEnrolledVoices().compactMap(\.colorIndex))
     }
@@ -341,7 +345,7 @@ struct MeetingDetailView: View {
         }
     }
 
-    // MARK: - Empty / Error states
+    // MARK: - Empty / Error States
 
     private var emptyView: some View {
         VStack(spacing: 12) {
@@ -393,6 +397,43 @@ struct MeetingDetailView: View {
         }
     }
 
+    // MARK: - Collapse Adjacent Same-Speaker Entries
+
+    /// Merge adjacent entries with the same speaker and stream into one,
+    /// concatenating text and extending time ranges. Called after any
+    /// operation that may create adjacent same-speaker segments (reassign,
+    /// split, enrollment reassign).
+    private func collapseAdjacentEntries() {
+        guard entries.count > 1 else { return }
+        var collapsed: [TranscriptEntry] = [entries[0]]
+
+        for i in 1..<entries.count {
+            let prev = collapsed[collapsed.count - 1]
+            let curr = entries[i]
+
+            if curr.speaker == prev.speaker &&
+               curr.stream == prev.stream &&
+               curr.speaker != "Speaker-?" &&
+               (curr.start - prev.end) < 3.0 {
+                // Merge into prev
+                collapsed[collapsed.count - 1] = TranscriptEntry(
+                    speaker: prev.speaker,
+                    start: prev.start,
+                    end: curr.end,
+                    text: prev.text + " " + curr.text,
+                    stream: prev.stream,
+                    isFinal: prev.isFinal
+                )
+            } else {
+                collapsed.append(curr)
+            }
+        }
+
+        if collapsed.count != entries.count {
+            entries = collapsed
+        }
+    }
+
     // MARK: - Reassign Speaker
 
     private func reassignEntry(at index: Int, to newSpeaker: String) {
@@ -406,8 +447,93 @@ struct MeetingDetailView: View {
             stream: old.stream,
             isFinal: old.isFinal
         )
+        collapseAdjacentEntries()
         MeetingStore.shared.saveTranscriptEntries(for: meeting, entries: entries)
         showToast("Reassigned to \(newSpeaker)")
+    }
+
+    // MARK: - Edit Segment Text
+
+    private func saveEdit(entryID: UUID, newText: String) {
+        guard let idx = entries.firstIndex(where: { $0.id == entryID }) else { return }
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let old = entries[idx]
+        entries[idx] = TranscriptEntry(
+            speaker: old.speaker,
+            start: old.start,
+            end: old.end,
+            text: trimmed,
+            stream: old.stream,
+            isFinal: old.isFinal
+        )
+        MeetingStore.shared.saveTranscriptEntries(for: meeting, entries: entries)
+        showToast("Text updated")
+    }
+
+    // MARK: - Split & Reassign
+
+    private func splitEntry(entryID: UUID, range: NSRange, newSpeaker: String) {
+        guard let idx = entries.firstIndex(where: { $0.id == entryID }) else { return }
+        let entry = entries[idx]
+        let nsText = entry.text as NSString
+
+        guard range.location != NSNotFound,
+              range.length > 0,
+              range.location + range.length <= nsText.length else { return }
+
+        let beforeText = nsText.substring(to: range.location).trimmingCharacters(in: .whitespaces)
+        let selectedText = nsText.substring(with: range).trimmingCharacters(in: .whitespaces)
+        let afterText = nsText.substring(from: range.location + range.length).trimmingCharacters(in: .whitespaces)
+
+        let totalChars = max(1, nsText.length)
+        let duration = entry.end - entry.start
+
+        var newEntries: [TranscriptEntry] = []
+        var currentTime = entry.start
+
+        if !beforeText.isEmpty {
+            let beforeEnd = entry.start + duration * Double(range.location) / Double(totalChars)
+            newEntries.append(TranscriptEntry(
+                speaker: entry.speaker,
+                start: currentTime,
+                end: beforeEnd,
+                text: beforeText,
+                stream: entry.stream,
+                isFinal: entry.isFinal
+            ))
+            currentTime = beforeEnd
+        }
+
+        if !selectedText.isEmpty {
+            let selectedEnd = entry.start + duration * Double(range.location + range.length) / Double(totalChars)
+            newEntries.append(TranscriptEntry(
+                speaker: newSpeaker,
+                start: currentTime,
+                end: selectedEnd,
+                text: selectedText,
+                stream: entry.stream,
+                isFinal: entry.isFinal
+            ))
+            currentTime = selectedEnd
+        }
+
+        if !afterText.isEmpty {
+            newEntries.append(TranscriptEntry(
+                speaker: entry.speaker,
+                start: currentTime,
+                end: entry.end,
+                text: afterText,
+                stream: entry.stream,
+                isFinal: entry.isFinal
+            ))
+        }
+
+        entries.replaceSubrange(idx...idx, with: newEntries)
+        collapseAdjacentEntries()
+        MeetingStore.shared.saveTranscriptEntries(for: meeting, entries: entries)
+        showToast("Split and reassigned to \(newSpeaker)")
     }
 
     // MARK: - Enroll from Segment
@@ -420,19 +546,15 @@ struct MeetingDetailView: View {
         processingMessage = "Converting audio..."
 
         do {
-            // 1. Extract audio clip from the opus file
             let clip = try extractAudioClip(for: entry)
 
-            // 2. Prepare VoiceID models
             processingMessage = "Loading models..."
             try await VoiceID.shared.prepare()
 
-            // 3. Enroll
             processingMessage = "Enrolling voice..."
             let userID = trimmed.lowercased().replacingOccurrences(of: " ", with: "_")
             try await VoiceID.shared.enroll(userID: userID, audioClips: [clip], colorIndex: colorIndex)
 
-            // 4. Reassign this segment (and any matching ones) to the new userID
             reassignMatchingSpeaker(oldSpeaker: entry.speaker, newSpeaker: userID)
 
             isProcessing = false
@@ -470,8 +592,6 @@ struct MeetingDetailView: View {
 
     // MARK: - Reassign All Matching
 
-    /// After enrollment, reassign all segments from the same old speaker label
-    /// to the new enrolled userID, then save.
     private func reassignMatchingSpeaker(oldSpeaker: String, newSpeaker: String) {
         var changed = false
         for i in entries.indices {
@@ -489,20 +609,14 @@ struct MeetingDetailView: View {
             }
         }
         if changed {
+            collapseAdjacentEntries()
             MeetingStore.shared.saveTranscriptEntries(for: meeting, entries: entries)
         }
     }
 
     // MARK: - Audio Extraction
 
-    /// Extract a 16 kHz mono Float32 audio clip from the meeting's opus file,
-    /// covering the segment's time range expanded to at least 10 seconds
-    /// (required by the Pyannote segmentation model for embedding extraction).
-    ///
-    /// Prefers the per-stream opus file (local.opus / remote.opus) for cleaner
-    /// single-speaker audio; falls back to the mixed recording.opus.
     private func extractAudioClip(for entry: TranscriptEntry) throws -> [Float] {
-        // Prefer per-stream file for cleaner audio
         let fm = FileManager.default
         let perStreamURL: URL = entry.stream == StreamType.mic.rawValue
             ? meeting.localRecordingURL
@@ -516,18 +630,15 @@ struct MeetingDetailView: View {
             throw AudioClipError.noRecordingFile
         }
 
-        // Decode opus to 16 kHz mono Float32 samples
         let allSamples = try Self.decodeOpusToSamples(opusURL: opusURL)
         let sampleRate: Double = 16_000
 
-        // Calculate the 10s extraction window centered on the segment
         let segMid = (entry.start + entry.end) / 2.0
         let segDuration = entry.end - entry.start
         let windowDuration = max(10.0, segDuration)
         var windowStart = segMid - windowDuration / 2.0
         var windowEnd = segMid + windowDuration / 2.0
 
-        // Clamp to file bounds
         let totalDuration = Double(allSamples.count) / sampleRate
         if windowStart < 0 {
             windowStart = 0
@@ -547,10 +658,6 @@ struct MeetingDetailView: View {
         return Array(allSamples[startSample..<endSample])
     }
 
-    /// Decode an Opus file to 16 kHz mono Float32 samples entirely in memory.
-    ///
-    /// Uses SFBAudioEngine's `AudioDecoder` to decode opus → PCM, then
-    /// `MeetingAudioConverter.convertTo16kMono` for resampling/channel mixing.
     private static func decodeOpusToSamples(opusURL: URL) throws -> [Float] {
         let decoder = try AudioDecoder(url: opusURL)
         try decoder.open()
@@ -563,13 +670,11 @@ struct MeetingDetailView: View {
 
         var allSamples: [Float] = []
 
-        // Decode all frames
         while true {
             buffer.frameLength = 0
             try decoder.decode(into: buffer, length: chunkFrames)
             if buffer.frameLength == 0 { break }
 
-            // Convert each chunk to 16 kHz mono
             if let mono16k = MeetingAudioConverter.convertTo16kMono(buffer) {
                 let samples = MeetingAudioConverter.toFloatArray(mono16k)
                 allSamples.append(contentsOf: samples)
@@ -613,6 +718,325 @@ private enum AudioClipError: Error, LocalizedError {
     }
 }
 
+// MARK: - Edit Segment Sheet
+
+/// Standalone sheet for editing a segment's text.
+/// Uses `init(initialValue:)` on `@State` to guarantee the text field is
+/// populated with the entry's text when the sheet first appears.
+private struct EditSegmentSheet: View {
+    let entry: TranscriptEntry
+    let onSave: (String) -> Void
+    @State private var text: String
+    @Environment(\.dismiss) var dismiss
+
+    init(entry: TranscriptEntry, onSave: @escaping (String) -> Void) {
+        self.entry = entry
+        self.onSave = onSave
+        _text = State(initialValue: entry.text)
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Edit Segment Text")
+                .font(.headline)
+
+            Text("\(entry.speaker) at \(formatTime(entry.start))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            TextEditor(text: $text)
+                .font(.body)
+                .frame(width: 420, height: 120)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                )
+
+            HStack(spacing: 12) {
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+
+                Button("Save") {
+                    onSave(text)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(24)
+    }
+
+    private func formatTime(_ time: TimeInterval) -> String {
+        let minutes = Int(time) / 60
+        let seconds = Int(time) % 60
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+// MARK: - Segment NSTextView
+
+/// Custom NSTextView subclass that overrides the right-click context menu.
+/// The `buildContextMenu` closure is called with the current selected range
+/// (nil if nothing is selected) and must return the complete menu.
+private class SegmentNSTextView: NSTextView {
+    var buildContextMenu: ((NSRange?) -> NSMenu)?
+    var heightDidChange: ((CGFloat) -> Void)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let range = selectedRange()
+        return buildContextMenu?(range.length > 0 ? range : nil) ?? super.menu(for: event)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        textContainer?.containerSize = NSSize(width: newSize.width, height: .greatestFiniteMagnitude)
+        recalculateHeight()
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        recalculateHeight()
+    }
+
+    private func recalculateHeight() {
+        guard let container = textContainer, let lm = layoutManager else { return }
+        lm.ensureLayout(for: container)
+        let usedRect = lm.usedRect(for: container)
+        let newHeight = max(ceil(usedRect.height), 16)
+        heightDidChange?(newHeight)
+    }
+}
+
+// MARK: - SegmentTextView (NSViewRepresentable)
+
+/// Embeds a `SegmentNSTextView` in SwiftUI. The text is selectable but not
+/// editable. Right-clicking anywhere on the text shows our full custom context
+/// menu. When text is selected, an additional "Reassign Selected to >" submenu
+/// appears at the top — enabling inline split & reassign without any sheet.
+private struct SegmentTextView: NSViewRepresentable {
+    let text: String
+    @Binding var height: CGFloat
+
+    // Data needed to build the context menu
+    let enrolledVoices: [VoiceEmbedding]
+    let callSpeakers: [String]
+    let currentSpeaker: String
+    let hasRecording: Bool
+    let segmentDuration: TimeInterval
+
+    // Callbacks
+    let onEdit: () -> Void
+    let onEnroll: () -> Void
+    let onReassign: (String) -> Void
+    let onEnhance: (String) -> Void
+    let onSplitReassign: (NSRange, String) -> Void
+
+    static let minEnrollmentDuration: TimeInterval = 10.0
+
+    func makeNSView(context: Context) -> SegmentNSTextView {
+        let tv = SegmentNSTextView()
+        tv.isEditable = false
+        tv.isSelectable = true
+        tv.isRichText = false
+        tv.drawsBackground = false
+        tv.font = .systemFont(ofSize: NSFont.systemFontSize)
+        tv.textColor = .labelColor
+        tv.textContainerInset = .zero
+        tv.textContainer?.lineFragmentPadding = 0
+        tv.textContainer?.widthTracksTextView = true
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.autoresizingMask = [.width]
+        tv.string = text
+
+        let coordinator = context.coordinator
+        tv.buildContextMenu = { [weak coordinator] range in
+            coordinator?.buildMenu(selectedRange: range) ?? NSMenu()
+        }
+        tv.heightDidChange = { [weak coordinator] newHeight in
+            coordinator?.updateHeight(newHeight)
+        }
+
+        return tv
+    }
+
+    func updateNSView(_ tv: SegmentNSTextView, context: Context) {
+        if tv.string != text {
+            tv.string = text
+        }
+        // Keep coordinator in sync with latest parent values
+        context.coordinator.parent = self
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    // MARK: - Coordinator
+
+    class Coordinator: NSObject {
+        var parent: SegmentTextView
+
+        init(parent: SegmentTextView) {
+            self.parent = parent
+        }
+
+        /// Container for split action data attached to menu items.
+        private class SplitAction: NSObject {
+            let range: NSRange
+            let speaker: String
+            init(range: NSRange, speaker: String) {
+                self.range = range
+                self.speaker = speaker
+            }
+        }
+
+        func updateHeight(_ newHeight: CGFloat) {
+            guard abs(newHeight - parent.height) > 0.5 else { return }
+            DispatchQueue.main.async {
+                self.parent.height = newHeight
+            }
+        }
+
+        func buildMenu(selectedRange: NSRange?) -> NSMenu {
+            let menu = NSMenu()
+            let p = parent
+            let minDur = SegmentTextView.minEnrollmentDuration
+
+            // ── Reassign Selected (only when text is selected) ──
+            if let range = selectedRange {
+                let splitSubmenu = NSMenu()
+                let allSpeakers = buildAllSpeakers()
+                for speaker in allSpeakers where speaker != p.currentSpeaker {
+                    let item = NSMenuItem(
+                        title: speaker,
+                        action: #selector(splitReassignAction(_:)),
+                        keyEquivalent: ""
+                    )
+                    item.target = self
+                    item.representedObject = SplitAction(range: range, speaker: speaker)
+                    splitSubmenu.addItem(item)
+                }
+                if splitSubmenu.items.isEmpty {
+                    splitSubmenu.addItem(NSMenuItem(title: "No other speakers", action: nil, keyEquivalent: ""))
+                }
+                let splitItem = NSMenuItem(title: "Reassign Selected to", action: nil, keyEquivalent: "")
+                splitItem.submenu = splitSubmenu
+                menu.addItem(splitItem)
+                menu.addItem(.separator())
+            }
+
+            // ── Edit Text ──
+            let editItem = NSMenuItem(title: "Edit Text...", action: #selector(editAction), keyEquivalent: "")
+            editItem.target = self
+            menu.addItem(editItem)
+
+            menu.addItem(.separator())
+
+            // ── Enroll as New Speaker ──
+            if p.hasRecording {
+                if p.segmentDuration >= minDur {
+                    let item = NSMenuItem(title: "Enroll as New Speaker...", action: #selector(enrollAction), keyEquivalent: "")
+                    item.target = self
+                    menu.addItem(item)
+                } else {
+                    menu.addItem(NSMenuItem(title: "Enroll as New Speaker... (need 10s+)", action: nil, keyEquivalent: ""))
+                }
+                menu.addItem(.separator())
+            }
+
+            // ── Reassign whole segment ──
+            let reassignSubmenu = NSMenu()
+            for voice in p.enrolledVoices {
+                let item = NSMenuItem(title: voice.userID, action: #selector(reassignAction(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = voice.userID as NSString
+                if voice.userID == p.currentSpeaker { item.isEnabled = false }
+                reassignSubmenu.addItem(item)
+            }
+            let nonEnrolled = p.callSpeakers.filter { $0 != p.currentSpeaker }
+            if !p.enrolledVoices.isEmpty && !nonEnrolled.isEmpty {
+                reassignSubmenu.addItem(.separator())
+            }
+            for speaker in nonEnrolled {
+                let item = NSMenuItem(title: speaker, action: #selector(reassignAction(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = speaker as NSString
+                reassignSubmenu.addItem(item)
+            }
+            if reassignSubmenu.items.isEmpty {
+                reassignSubmenu.addItem(NSMenuItem(title: "No other speakers", action: nil, keyEquivalent: ""))
+            }
+            let reassignItem = NSMenuItem(title: "Reassign to", action: nil, keyEquivalent: "")
+            reassignItem.submenu = reassignSubmenu
+            menu.addItem(reassignItem)
+
+            // ── Enhance Voice ──
+            if p.hasRecording && !p.enrolledVoices.isEmpty {
+                let enhanceSubmenu = NSMenu()
+                for voice in p.enrolledVoices {
+                    if p.segmentDuration >= minDur {
+                        let item = NSMenuItem(title: voice.userID, action: #selector(enhanceAction(_:)), keyEquivalent: "")
+                        item.target = self
+                        item.representedObject = voice.userID as NSString
+                        enhanceSubmenu.addItem(item)
+                    } else {
+                        enhanceSubmenu.addItem(NSMenuItem(title: "\(voice.userID) (need 10s+)", action: nil, keyEquivalent: ""))
+                    }
+                }
+                let enhanceItem = NSMenuItem(title: "Enhance Voice", action: nil, keyEquivalent: "")
+                enhanceItem.submenu = enhanceSubmenu
+                menu.addItem(enhanceItem)
+            }
+
+            menu.addItem(.separator())
+
+            // ── Standard text actions (target nil = responder chain = the text view) ──
+            menu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+            menu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+
+            return menu
+        }
+
+        private func buildAllSpeakers() -> [String] {
+            let enrolled = parent.enrolledVoices.map(\.userID)
+            let call = parent.callSpeakers
+            var seen = Set<String>()
+            var result: [String] = []
+            for s in enrolled + call {
+                if seen.insert(s).inserted { result.append(s) }
+            }
+            return result
+        }
+
+        // MARK: - Menu Actions
+
+        @objc func editAction() {
+            DispatchQueue.main.async { self.parent.onEdit() }
+        }
+
+        @objc func enrollAction() {
+            DispatchQueue.main.async { self.parent.onEnroll() }
+        }
+
+        @objc func reassignAction(_ sender: NSMenuItem) {
+            guard let speaker = sender.representedObject as? NSString else { return }
+            DispatchQueue.main.async { self.parent.onReassign(speaker as String) }
+        }
+
+        @objc func enhanceAction(_ sender: NSMenuItem) {
+            guard let userID = sender.representedObject as? NSString else { return }
+            DispatchQueue.main.async { self.parent.onEnhance(userID as String) }
+        }
+
+        @objc func splitReassignAction(_ sender: NSMenuItem) {
+            guard let action = sender.representedObject as? SplitAction else { return }
+            DispatchQueue.main.async { self.parent.onSplitReassign(action.range, action.speaker) }
+        }
+    }
+}
+
 // MARK: - Single Transcript Row
 
 private struct MeetingTranscriptRow: View {
@@ -621,15 +1045,16 @@ private struct MeetingTranscriptRow: View {
     let recordingURL: URL
     let hasRecording: Bool
     let enrolledVoices: [VoiceEmbedding]
-    /// Unique speaker names from the current call (non-enrolled).
     let callSpeakers: [String]
 
-    /// Callbacks for context menu actions.
     let onEnroll: (TranscriptEntry) -> Void
     let onReassign: (TranscriptEntry, String) -> Void
     let onEnhance: (TranscriptEntry, String) -> Void
+    let onEdit: (TranscriptEntry) -> Void
+    let onSplitReassign: (TranscriptEntry, NSRange, String) -> Void
 
-    /// True when this segment is currently being played (segment-bounded).
+    @State private var textHeight: CGFloat = 16
+
     private var isActiveSegment: Bool {
         player.isPlaying &&
         player.currentTime >= entry.start &&
@@ -637,10 +1062,11 @@ private struct MeetingTranscriptRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             // Per-segment playback buttons
             if hasRecording {
                 segmentButtons
+                    .padding(.top, 2)
             }
 
             // Timestamp
@@ -648,17 +1074,31 @@ private struct MeetingTranscriptRow: View {
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.tertiary)
                 .frame(width: 52, alignment: .trailing)
+                .padding(.top, 1)
 
             // Speaker name
             Text(entry.speaker)
                 .font(.caption)
                 .fontWeight(.semibold)
                 .foregroundStyle(CatppuccinSpeaker.labelColor(for: entry.speaker))
+                .padding(.top, 1)
 
-            // Text
-            Text(entry.text)
-                .font(.body)
-                .foregroundStyle(.primary)
+            // Text — custom NSTextView with full context menu
+            SegmentTextView(
+                text: entry.text,
+                height: $textHeight,
+                enrolledVoices: enrolledVoices,
+                callSpeakers: callSpeakers,
+                currentSpeaker: entry.speaker,
+                hasRecording: hasRecording,
+                segmentDuration: entry.end - entry.start,
+                onEdit: { onEdit(entry) },
+                onEnroll: { onEnroll(entry) },
+                onReassign: { speaker in onReassign(entry, speaker) },
+                onEnhance: { userID in onEnhance(entry, userID) },
+                onSplitReassign: { range, speaker in onSplitReassign(entry, range, speaker) }
+            )
+            .frame(height: max(textHeight, 16))
 
             Spacer(minLength: 0)
         }
@@ -669,10 +1109,10 @@ private struct MeetingTranscriptRow: View {
                 .fill(CatppuccinSpeaker.color(for: entry.speaker)
                     .opacity(isActiveSegment ? 0.15 : CatppuccinSpeaker.rowBackgroundOpacity))
         )
-        .contextMenu { contextMenuContent }
+        .contextMenu { rowContextMenu }
     }
 
-    // MARK: - Context Menu
+    // MARK: - Row Context Menu (for non-text areas)
 
     /// Minimum segment duration (seconds) for enrollment.
     private static let minEnrollmentDuration: TimeInterval = 10.0
@@ -682,90 +1122,54 @@ private struct MeetingTranscriptRow: View {
         callSpeakers.filter { $0 != entry.speaker }
     }
 
-    /// Whether any reassignment targets exist (enrolled or call speakers).
     private var hasReassignTargets: Bool {
         !enrolledVoices.isEmpty || !reassignableCallSpeakers.isEmpty
     }
 
     @ViewBuilder
-    private var contextMenuContent: some View {
+    private var rowContextMenu: some View {
+        Button("Edit Text...") { onEdit(entry) }
+
+        Divider()
+
         if hasRecording {
             let segDuration = entry.end - entry.start
             if segDuration >= Self.minEnrollmentDuration {
-                Button("Enroll as New Speaker...") {
-                    onEnroll(entry)
-                }
+                Button("Enroll as New Speaker...") { onEnroll(entry) }
             } else {
-                Button("Enroll as New Speaker... (need \(Int(ceil(Self.minEnrollmentDuration)))s+)") {}
+                Button("Enroll as New Speaker... (need 10s+)") {}
                     .disabled(true)
             }
-
             Divider()
+        }
 
-            if hasReassignTargets {
-                Menu("Reassign to") {
-                    // Enrolled voices first
-                    if !enrolledVoices.isEmpty {
-                        ForEach(enrolledVoices) { voice in
-                            Button(voice.userID) {
-                                onReassign(entry, voice.userID)
-                            }
+        if hasReassignTargets {
+            Menu("Reassign to") {
+                if !enrolledVoices.isEmpty {
+                    ForEach(enrolledVoices) { voice in
+                        Button(voice.userID) { onReassign(entry, voice.userID) }
                             .disabled(voice.userID == entry.speaker)
-                        }
-                    }
-
-                    // Call speakers (non-enrolled)
-                    if !reassignableCallSpeakers.isEmpty {
-                        if !enrolledVoices.isEmpty {
-                            Divider()
-                        }
-                        ForEach(reassignableCallSpeakers, id: \.self) { speaker in
-                            Button(speaker) {
-                                onReassign(entry, speaker)
-                            }
-                        }
                     }
                 }
-            } else {
-                Button("Reassign to") {}
-                    .disabled(true)
-            }
-
-            if !enrolledVoices.isEmpty {
-                Menu("Enhance Voice") {
-                    ForEach(enrolledVoices) { voice in
-                        if segDuration >= Self.minEnrollmentDuration {
-                            Button(voice.userID) {
-                                onEnhance(entry, voice.userID)
-                            }
-                        } else {
-                            Button("\(voice.userID) (need \(Int(ceil(Self.minEnrollmentDuration)))s+)") {}
-                                .disabled(true)
-                        }
+                if !reassignableCallSpeakers.isEmpty {
+                    if !enrolledVoices.isEmpty { Divider() }
+                    ForEach(reassignableCallSpeakers, id: \.self) { speaker in
+                        Button(speaker) { onReassign(entry, speaker) }
                     }
                 }
             }
         } else {
-            // No recording — only allow reassignment
-            if hasReassignTargets {
-                Menu("Reassign to") {
-                    if !enrolledVoices.isEmpty {
-                        ForEach(enrolledVoices) { voice in
-                            Button(voice.userID) {
-                                onReassign(entry, voice.userID)
-                            }
-                            .disabled(voice.userID == entry.speaker)
-                        }
-                    }
-                    if !reassignableCallSpeakers.isEmpty {
-                        if !enrolledVoices.isEmpty {
-                            Divider()
-                        }
-                        ForEach(reassignableCallSpeakers, id: \.self) { speaker in
-                            Button(speaker) {
-                                onReassign(entry, speaker)
-                            }
-                        }
+            Button("Reassign to") {}.disabled(true)
+        }
+
+        if hasRecording && !enrolledVoices.isEmpty {
+            let segDuration = entry.end - entry.start
+            Menu("Enhance Voice") {
+                ForEach(enrolledVoices) { voice in
+                    if segDuration >= Self.minEnrollmentDuration {
+                        Button(voice.userID) { onEnhance(entry, voice.userID) }
+                    } else {
+                        Button("\(voice.userID) (need 10s+)") {}.disabled(true)
                     }
                 }
             }
@@ -776,7 +1180,6 @@ private struct MeetingTranscriptRow: View {
 
     private var segmentButtons: some View {
         HStack(spacing: 2) {
-            // Play from here (continuous)
             Button {
                 player.playFrom(url: recordingURL, time: entry.start)
             } label: {
@@ -786,11 +1189,10 @@ private struct MeetingTranscriptRow: View {
             .buttonStyle(.borderless)
             .help("Play from here")
 
-            // Play this segment only
             Button {
                 player.playSegment(url: recordingURL, from: entry.start, to: entry.end)
             } label: {
-                Image(systemName: "play.rectangle.fill")
+                Image(systemName: "forward.end.fill")
                     .font(.system(size: 9))
             }
             .buttonStyle(.borderless)

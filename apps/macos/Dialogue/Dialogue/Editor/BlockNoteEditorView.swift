@@ -18,11 +18,34 @@ struct BlockNoteEditorView: NSViewRepresentable {
         let controller = config.userContentController
         controller.add(context.coordinator, name: "editorBridge")
 
+        // Inject early CSS so the page body is transparent while loading,
+        // preventing a white flash when switching views in dark mode.
+        let earlyCSS = WKUserScript(
+            source: """
+                document.addEventListener('DOMContentLoaded', function() {
+                    var s = document.createElement('style');
+                    s.textContent = 'html, body { background: transparent !important; }';
+                    document.head.prepend(s);
+                });
+                // Also set it immediately for the current document
+                var s = document.createElement('style');
+                s.textContent = 'html, body { background: transparent !important; }';
+                (document.head || document.documentElement).prepend(s);
+                """,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        controller.addUserScript(earlyCSS)
+
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         
         // Transparent background to match native app chrome
         webView.setValue(false, forKey: "drawsBackground")
+
+        // Prevent white flash in dark mode: the under-page color shows
+        // behind web content while the HTML/CSS is still loading.
+        webView.underPageBackgroundColor = .windowBackgroundColor
 
         context.coordinator.document = document
         context.coordinator.webView = webView

@@ -23,13 +23,32 @@ struct SavedMeeting: Identifiable, Hashable {
 
 /// Transcript entry stored in transcript.json.
 struct TranscriptEntry: Codable, Identifiable {
-    var id: String { "\(start)-\(speaker)-\(text.prefix(20))" }
+    let id: UUID
     let speaker: String
     let start: TimeInterval
     let end: TimeInterval
     let text: String
     let stream: String       // "Local" or "Remote"
     let isFinal: Bool
+
+    init(
+        id: UUID = UUID(),
+        speaker: String,
+        start: TimeInterval,
+        end: TimeInterval,
+        text: String,
+        stream: String,
+        isFinal: Bool
+    ) {
+        self.id = id
+        self.speaker = speaker
+        self.start = start
+        self.end = end
+        self.text = text
+        self.stream = stream
+        self.isFinal = isFinal
+    }
+
 }
 
 /// Per-segment word-level timing data stored in word_timings.json.
