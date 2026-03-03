@@ -66,6 +66,8 @@
 		PP000001 /* VoiceCommandManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000011 /* VoiceCommandManager.swift */; };
 		PP000002 /* VoiceCommandOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000012 /* VoiceCommandOverlay.swift */; };
 		PP000003 /* LoadingIndicatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000013 /* LoadingIndicatorView.swift */; };
+		PP000005 /* VoiceCommandTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000014 /* VoiceCommandTranscriber.swift */; };
+		RR000001 /* NoteExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR000011 /* NoteExporter.swift */; };
 		PP000004 /* LoadingIcon in Resources */ = {isa = PBXBuildFile; fileRef = PP000020 /* LoadingIcon */; };
 		QQ000001 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = QQ000011 /* AppIcon.icns */; };
 /* End PBXBuildFile section */
@@ -127,6 +129,8 @@
 		PP000011 /* VoiceCommandManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandManager.swift; sourceTree = "<group>"; };
 		PP000012 /* VoiceCommandOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandOverlay.swift; sourceTree = "<group>"; };
 		PP000013 /* LoadingIndicatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoadingIndicatorView.swift; sourceTree = "<group>"; };
+		PP000014 /* VoiceCommandTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandTranscriber.swift; sourceTree = "<group>"; };
+		RR000011 /* NoteExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteExporter.swift; sourceTree = "<group>"; };
 		PP000020 /* LoadingIcon */ = {isa = PBXFileReference; lastKnownFileType = folder; path = LoadingIcon; sourceTree = "<group>"; };
 		QQ000011 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -208,6 +212,7 @@
 			children = (
 				BB000011 /* BlockNoteEditorView.swift */,
 				BB000012 /* BridgeMessages.swift */,
+				RR000011 /* NoteExporter.swift */,
 			);
 			path = Editor;
 			sourceTree = "<group>";
@@ -336,6 +341,7 @@
 				PP000011 /* VoiceCommandManager.swift */,
 				PP000012 /* VoiceCommandOverlay.swift */,
 				PP000013 /* LoadingIndicatorView.swift */,
+				PP000014 /* VoiceCommandTranscriber.swift */,
 			);
 			path = VoiceCommand;
 			sourceTree = "<group>";
@@ -514,6 +520,8 @@
 				PP000001 /* VoiceCommandManager.swift in Sources */,
 				PP000002 /* VoiceCommandOverlay.swift in Sources */,
 				PP000003 /* LoadingIndicatorView.swift in Sources */,
+				PP000005 /* VoiceCommandTranscriber.swift in Sources */,
+				RR000001 /* NoteExporter.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -104,10 +104,38 @@ function App() {
     setThemeState(t);
   }, []);
 
+  // Bridge: export to markdown/HTML from arbitrary blocks JSON
+  const exportMarkdown = useCallback(
+    async (blocksJSON: string): Promise<string> => {
+      const blocks = JSON.parse(blocksJSON);
+      return await editor.blocksToMarkdownLossy(blocks);
+    },
+    [editor]
+  );
+
+  const exportHTML = useCallback(
+    async (blocksJSON: string): Promise<string> => {
+      const blocks = JSON.parse(blocksJSON);
+      return await editor.blocksToHTMLLossy(blocks);
+    },
+    [editor]
+  );
+
+  const exportFullHTML = useCallback(
+    async (blocksJSON: string): Promise<string> => {
+      const blocks = JSON.parse(blocksJSON);
+      return await editor.blocksToFullHTML(blocks);
+    },
+    [editor]
+  );
+
   // Register bridge functions on window
   useEffect(() => {
     window.loadDocument = loadDocument;
     window.setTheme = setTheme;
+    window.exportMarkdown = exportMarkdown;
+    window.exportHTML = exportHTML;
+    window.exportFullHTML = exportFullHTML;
 
     // Notify Swift that the editor is ready
     window.webkit?.messageHandlers?.editorBridge?.postMessage({
@@ -117,8 +145,11 @@ function App() {
     return () => {
       delete window.loadDocument;
       delete window.setTheme;
+      delete window.exportMarkdown;
+      delete window.exportHTML;
+      delete window.exportFullHTML;
     };
-  }, [loadDocument, setTheme]);
+  }, [loadDocument, setTheme, exportMarkdown, exportHTML, exportFullHTML]);
 
   // Detect system dark mode when not in native wrapper
   useEffect(() => {

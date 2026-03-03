@@ -17,6 +17,15 @@ declare global {
     /** Called by Swift to set the editor theme */
     setTheme?: (theme: "light" | "dark") => void;
 
+    /** Called by Swift to export blocks to Markdown */
+    exportMarkdown?: (blocksJSON: string) => Promise<string>;
+
+    /** Called by Swift to export blocks to interoperable HTML */
+    exportHTML?: (blocksJSON: string) => Promise<string>;
+
+    /** Called by Swift to export blocks to full BlockNote HTML */
+    exportFullHTML?: (blocksJSON: string) => Promise<string>;
+
     /** Called by Swift to dispatch a streamed AI chunk */
     dispatchAIChunk?: (data: {
       requestId: string;

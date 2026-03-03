@@ -20,8 +20,8 @@ struct DialogueApp: App {
                 .onAppear {
                     if #available(macOS 26.0, *) {
                         ModelPreloader.shared.preload()
+                        _ = VoiceCommandManager.shared
                     }
-                    _ = VoiceCommandManager.shared
                 }
         }
 

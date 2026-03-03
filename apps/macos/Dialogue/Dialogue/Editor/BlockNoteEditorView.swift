@@ -143,6 +143,9 @@ struct BlockNoteEditorView: NSViewRepresentable {
             isEditorReady = true
             guard let webView = webView else { return }
 
+            // Expose the WebView to NoteExporter for export/copy operations
+            NoteExporter.shared.webView = webView
+
             // Inject API key if available
             if let key = try? KeychainManager.shared.getAPIKey() {
                 let cmd = BridgeCommandToJS.injectAPIKey(key: key)

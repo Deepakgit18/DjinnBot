@@ -599,6 +599,30 @@ extension FileTreeViewController: NSMenuDelegate {
         } else {
             menu.addItem(withTitle: "Open", action: #selector(contextOpenFile(_:)), keyEquivalent: "").target = self
             menu.addItem(.separator())
+
+            // Export submenu
+            let exportMenu = NSMenu()
+            let mdExport = exportMenu.addItem(withTitle: "Markdown (.md)", action: #selector(contextExportMarkdown(_:)), keyEquivalent: "")
+            mdExport.target = self
+            let htmlExport = exportMenu.addItem(withTitle: "HTML (.html)", action: #selector(contextExportHTML(_:)), keyEquivalent: "")
+            htmlExport.target = self
+            let fullHTMLExport = exportMenu.addItem(withTitle: "HTML Full (.html)", action: #selector(contextExportFullHTML(_:)), keyEquivalent: "")
+            fullHTMLExport.target = self
+            let exportItem = menu.addItem(withTitle: "Export As...", action: nil, keyEquivalent: "")
+            exportItem.submenu = exportMenu
+
+            // Copy submenu
+            let copyMenu = NSMenu()
+            let mdCopy = copyMenu.addItem(withTitle: "Markdown", action: #selector(contextCopyMarkdown(_:)), keyEquivalent: "")
+            mdCopy.target = self
+            let htmlCopy = copyMenu.addItem(withTitle: "HTML", action: #selector(contextCopyHTML(_:)), keyEquivalent: "")
+            htmlCopy.target = self
+            let fullHTMLCopy = copyMenu.addItem(withTitle: "HTML Full", action: #selector(contextCopyFullHTML(_:)), keyEquivalent: "")
+            fullHTMLCopy.target = self
+            let copyItem = menu.addItem(withTitle: "Copy As", action: nil, keyEquivalent: "")
+            copyItem.submenu = copyMenu
+
+            menu.addItem(.separator())
             menu.addItem(withTitle: "Rename...", action: #selector(contextRename(_:)), keyEquivalent: "").target = self
             menu.addItem(withTitle: "Show in Finder", action: #selector(contextShowInFinder(_:)), keyEquivalent: "").target = self
             menu.addItem(.separator())
@@ -641,6 +665,38 @@ extension FileTreeViewController: NSMenuDelegate {
     @objc private func contextDelete(_ sender: Any) {
         guard let item = clickedItem else { return }
         onDeleteItem?(item.url)
+    }
+
+    // MARK: - Export / Copy Actions
+
+    @objc private func contextExportMarkdown(_ sender: Any) {
+        guard let item = clickedItem, !item.isFolder else { return }
+        NoteExporter.shared.exportToFile(item.url, format: .markdown)
+    }
+
+    @objc private func contextExportHTML(_ sender: Any) {
+        guard let item = clickedItem, !item.isFolder else { return }
+        NoteExporter.shared.exportToFile(item.url, format: .html)
+    }
+
+    @objc private func contextExportFullHTML(_ sender: Any) {
+        guard let item = clickedItem, !item.isFolder else { return }
+        NoteExporter.shared.exportToFile(item.url, format: .htmlFull)
+    }
+
+    @objc private func contextCopyMarkdown(_ sender: Any) {
+        guard let item = clickedItem, !item.isFolder else { return }
+        NoteExporter.shared.copyToClipboard(item.url, format: .markdown)
+    }
+
+    @objc private func contextCopyHTML(_ sender: Any) {
+        guard let item = clickedItem, !item.isFolder else { return }
+        NoteExporter.shared.copyToClipboard(item.url, format: .html)
+    }
+
+    @objc private func contextCopyFullHTML(_ sender: Any) {
+        guard let item = clickedItem, !item.isFolder else { return }
+        NoteExporter.shared.copyToClipboard(item.url, format: .htmlFull)
     }
 }
 
