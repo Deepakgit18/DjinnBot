@@ -2,6 +2,7 @@ import AVFoundation
 import FluidAudio
 import Foundation
 import OSLog
+import SFBAudioEngine
 @preconcurrency import Speech
 
 /// Runs high-accuracy offline diarization (VBx pipeline) and offline ASR on
@@ -47,6 +48,7 @@ final class RefinementProgress: ObservableObject {
         case diarizing(name: String, current: Int, total: Int)
         case transcribing(name: String, current: Int, total: Int)
         case buildingTranscript
+        case compressingAudio
         case complete(segments: Int, original: Int)
         case failed(String)
     }
@@ -73,7 +75,8 @@ final class RefinementProgress: ObservableObject {
             guard total > 0 else { return nil }
             // Transcribing is 40–80%
             return 0.4 + 0.4 * Double(current - 1) / Double(total)
-        case .buildingTranscript: return 0.9
+        case .buildingTranscript: return 0.8
+        case .compressingAudio: return 0.9
         case .complete: return 1.0
         default: return nil
         }
@@ -89,6 +92,7 @@ final class RefinementProgress: ObservableObject {
         case .transcribing(let name, let current, let total):
             return "Transcribing \(name) audio (\(current)/\(total))..."
         case .buildingTranscript: return "Building refined transcript..."
+        case .compressingAudio: return "Compressing audio to Opus..."
         case .complete(let segments, let original):
             return "Refinement complete: \(segments) segments (was \(original))"
         case .failed(let msg): return "Refinement failed: \(msg)"
@@ -245,19 +249,7 @@ final class PostRecordingRefiner {
         allSegments.sort { $0.start < $1.start }
 
         let originalCount = liveSegments.filter { $0.isFinal && $0.hasSubstantialContent }.count
-        logger.info("[REFINE] Complete: \(allSegments.count) segments built from scratch (was \(originalCount) live segments)")
-
-        await MainActor.run {
-            progress.state = .complete(segments: allSegments.count, original: originalCount)
-        }
-
-        // Auto-dismiss after 5 seconds
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(5))
-            if case .complete = progress.state {
-                progress.state = .idle
-            }
-        }
+        logger.info("[REFINE] Transcript built: \(allSegments.count) segments from scratch (was \(originalCount) live segments)")
 
         return allSegments
     }
@@ -616,6 +608,44 @@ final class PostRecordingRefiner {
         }
         let denom = sqrt(normA * normB)
         return denom > 1e-6 ? dot / denom : 0
+    }
+
+    // MARK: - WAV → Opus Conversion
+
+    /// Convert all WAV files in the meeting folder to Ogg Opus and delete the originals.
+    ///
+    /// Called after offline refinement completes (or after the live transcript is saved
+    /// when refinement is skipped). WAV files are large (~1.9 MB/min at 16kHz mono);
+    /// Opus compresses to ~6 KB/min at quality settings suitable for speech.
+    ///
+    /// Uses SFBAudioEngine's `AudioConverter` which infers the output format from
+    /// the file extension. `.opus` → Ogg Opus.
+    func convertWAVsToOpus(in meetingFolder: URL) async {
+        let fm = FileManager.default
+        let wavNames = ["recording.wav", "local.wav", "remote.wav"]
+        let progress = RefinementProgress.shared
+
+        await MainActor.run { progress.state = .compressingAudio }
+
+        for wavName in wavNames {
+            let wavURL = meetingFolder.appendingPathComponent(wavName)
+            guard fm.fileExists(atPath: wavURL.path) else { continue }
+
+            let opusName = wavName.replacingOccurrences(of: ".wav", with: ".opus")
+            let opusURL = meetingFolder.appendingPathComponent(opusName)
+
+            do {
+                try AudioConverter.convert(wavURL, to: opusURL)
+                // Delete the WAV original after successful conversion
+                try fm.removeItem(at: wavURL)
+                logger.info("[OPUS] Converted \(wavName) → \(opusName)")
+            } catch {
+                logger.warning("[OPUS] Failed to convert \(wavName): \(error.localizedDescription)")
+                // Clean up partial opus file on failure
+                try? fm.removeItem(at: opusURL)
+                // Keep the WAV if conversion failed — don't lose audio data
+            }
+        }
     }
 }
 

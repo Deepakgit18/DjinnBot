@@ -216,27 +216,36 @@ final class MeetingRecorderController: ObservableObject {
     /// This runs asynchronously after the meeting is saved. The user sees the live
     /// transcript immediately; it gets refined in the background with higher accuracy.
     private func runPostRecordingRefinement(meeting: SavedMeeting) async {
-        let localURL = meeting.localRecordingURL
-        let remoteURL = meeting.remoteRecordingURL
+        // WAV files are still on disk at this point — SavedMeeting URLs point to
+        // .opus which don't exist yet. Reference the WAVs directly by name.
+        let folder = meeting.folderURL
+        let localWavURL = folder.appendingPathComponent("local.wav")
+        let remoteWavURL = folder.appendingPathComponent("remote.wav")
         let fm = FileManager.default
 
-        let hasLocal = fm.fileExists(atPath: localURL.path)
-        let hasRemote = fm.fileExists(atPath: remoteURL.path)
+        let hasLocal = fm.fileExists(atPath: localWavURL.path)
+        let hasRemote = fm.fileExists(atPath: remoteWavURL.path)
 
         guard hasLocal || hasRemote else {
             logger.info("No per-stream WAVs found; skipping post-recording refinement")
             return
         }
 
-        logger.info("Starting post-recording refinement for \(meeting.folderURL.lastPathComponent)")
+        logger.info("Starting post-recording refinement for \(folder.lastPathComponent)")
+
+        let refiner = PostRecordingRefiner()
+        var refinedCount = 0
+        var originalCount = 0
 
         do {
-            let refiner = PostRecordingRefiner()
             let refined = try await refiner.refine(
-                localWavURL: hasLocal ? localURL : nil,
-                remoteWavURL: hasRemote ? remoteURL : nil,
+                localWavURL: hasLocal ? localWavURL : nil,
+                remoteWavURL: hasRemote ? remoteWavURL : nil,
                 liveSegments: mergedSegments
             )
+
+            refinedCount = refined.count
+            originalCount = mergedSegments.filter { $0.isFinal && $0.hasSubstantialContent }.count
 
             // Update the live display
             mergedSegments = refined
@@ -244,7 +253,7 @@ final class MeetingRecorderController: ObservableObject {
             // Overwrite the saved transcript with the refined version
             MeetingStore.shared.updateTranscript(for: meeting, segments: refined)
 
-            logger.info("Post-recording refinement complete for \(meeting.folderURL.lastPathComponent)")
+            logger.info("Post-recording refinement complete for \(folder.lastPathComponent)")
         } catch {
             logger.warning("Post-recording refinement failed: \(error.localizedDescription)")
             RefinementProgress.shared.state = .failed(error.localizedDescription)
@@ -255,6 +264,22 @@ final class MeetingRecorderController: ObservableObject {
                 if case .failed = RefinementProgress.shared.state {
                     RefinementProgress.shared.state = .idle
                 }
+            }
+        }
+
+        // Convert WAV files to Opus for long-term storage regardless of whether
+        // refinement succeeded or failed — the WAVs are no longer needed.
+        await refiner.convertWAVsToOpus(in: folder)
+
+        // Refresh the meeting list so it picks up the new .opus files
+        MeetingStore.shared.refresh()
+
+        // Show completion and auto-dismiss
+        RefinementProgress.shared.state = .complete(segments: refinedCount, original: originalCount)
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            if case .complete = RefinementProgress.shared.state {
+                RefinementProgress.shared.state = .idle
             }
         }
     }

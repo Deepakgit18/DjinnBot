@@ -11,9 +11,9 @@ struct SavedMeeting: Identifiable, Hashable {
     let hasRecording: Bool
     let hasTranscript: Bool
 
-    var recordingURL: URL { folderURL.appendingPathComponent("recording.wav") }
-    var localRecordingURL: URL { folderURL.appendingPathComponent("local.wav") }
-    var remoteRecordingURL: URL { folderURL.appendingPathComponent("remote.wav") }
+    var recordingURL: URL { folderURL.appendingPathComponent("recording.opus") }
+    var localRecordingURL: URL { folderURL.appendingPathComponent("local.opus") }
+    var remoteRecordingURL: URL { folderURL.appendingPathComponent("remote.opus") }
     var transcriptURL: URL { folderURL.appendingPathComponent("transcript.json") }
     var wordTimingsURL: URL { folderURL.appendingPathComponent("word_timings.json") }
 
@@ -298,7 +298,7 @@ final class MeetingStore: ObservableObject {
 
             let folderName = item.lastPathComponent
             let recordingExists = fileManager.fileExists(
-                atPath: item.appendingPathComponent("recording.wav").path
+                atPath: item.appendingPathComponent("recording.opus").path
             )
             let transcriptExists = fileManager.fileExists(
                 atPath: item.appendingPathComponent("transcript.json").path

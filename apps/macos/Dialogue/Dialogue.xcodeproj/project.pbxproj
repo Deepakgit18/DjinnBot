@@ -59,6 +59,7 @@
 		JJ000004 /* VoiceEnrollmentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ000014 /* VoiceEnrollmentSheet.swift */; };
 		KK000001 /* VoiceID.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK000011 /* VoiceID.swift */; };
 		LL000001 /* PostRecordingRefiner.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL000011 /* PostRecordingRefiner.swift */; };
+		MM00000C /* SFBAudioEngine in Frameworks */ = {isa = PBXBuildFile; productRef = MM000082 /* SFBAudioEngine */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -124,6 +125,7 @@
 				CC00000C /* FluidAudio in Frameworks */,
 				DD000090 /* MarkdownUI in Frameworks */,
 				CC000090 /* Speech.framework in Frameworks */,
+				MM00000C /* SFBAudioEngine in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -328,6 +330,7 @@
 			packageProductDependencies = (
 				CC000082 /* FluidAudio */,
 				DD000091 /* MarkdownUI */,
+				MM000082 /* SFBAudioEngine */,
 			);
 			productName = Dialogue;
 			productReference = AA000010 /* Dialogue.app */;
@@ -360,6 +363,7 @@
 			packageReferences = (
 				CC000071 /* XCRemoteSwiftPackageReference "FluidAudio" */,
 				DD000080 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
+				MM000071 /* XCRemoteSwiftPackageReference "SFBAudioEngine" */,
 			);
 			productRefGroup = AA000032 /* Products */;
 			projectDirPath = "";
@@ -694,6 +698,14 @@
 				minimumVersion = 2.4.1;
 			};
 		};
+		MM000071 /* XCRemoteSwiftPackageReference "SFBAudioEngine" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sbooth/SFBAudioEngine.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.12.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -706,6 +718,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = DD000080 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
 			productName = MarkdownUI;
+		};
+		MM000082 /* SFBAudioEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = MM000071 /* XCRemoteSwiftPackageReference "SFBAudioEngine" */;
+			productName = SFBAudioEngine;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
