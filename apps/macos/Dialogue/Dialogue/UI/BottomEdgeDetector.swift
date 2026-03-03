@@ -150,7 +150,7 @@ class MouseTrackingNSView: NSView {
         
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            options: [.mouseMoved, .activeAlways, .inVisibleRect],
             owner: self,
             userInfo: nil
         )
