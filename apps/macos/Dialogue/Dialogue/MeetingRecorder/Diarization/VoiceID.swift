@@ -220,6 +220,55 @@ public final class VoiceID {
         return embedding
     }
 
+    /// Enhance an existing enrollment by adding a new audio clip.
+    ///
+    /// Extracts an embedding from the clip, then produces a weighted average
+    /// of the existing enrollment vector and the new one. The weight is
+    /// proportional to clip counts, so early enrollments (1–3 clips) benefit
+    /// more from each new sample, while mature enrollments change slowly.
+    ///
+    /// - Parameters:
+    ///   - userID: The enrolled speaker to enhance.
+    ///   - audioClip: 16 kHz mono Float32 samples (>= 10 seconds recommended).
+    /// - Returns: The updated `VoiceEmbedding`.
+    @discardableResult
+    public func enhance(userID: String, audioClip: [Float]) async throws -> VoiceEmbedding {
+        guard let existing = enrolledVoices[userID] else {
+            throw VoiceIDError.noAudioClips
+        }
+        let newVec = try extractEmbedding(from: audioClip)
+        let newCount = existing.clipCount + 1
+
+        // Weighted average: existing vector has `clipCount` weight, new has 1
+        var merged = [Float](repeating: 0, count: existing.vector.count)
+        var existingWeight = Float(existing.clipCount)
+        var newWeight: Float = 1.0
+        // scaled_existing = existing.vector * existingWeight
+        var scaledExisting = [Float](repeating: 0, count: merged.count)
+        vDSP_vsmul(existing.vector, 1, &existingWeight, &scaledExisting, 1, vDSP_Length(merged.count))
+        // scaled_new = newVec * newWeight
+        var scaledNew = [Float](repeating: 0, count: merged.count)
+        vDSP_vsmul(newVec, 1, &newWeight, &scaledNew, 1, vDSP_Length(merged.count))
+        // sum = scaled_existing + scaled_new
+        vDSP_vadd(scaledExisting, 1, scaledNew, 1, &merged, 1, vDSP_Length(merged.count))
+        // average = sum / newCount
+        var countF = Float(newCount)
+        vDSP_vsdiv(merged, 1, &countF, &merged, 1, vDSP_Length(merged.count))
+        let normalized = normalizeL2(merged)
+
+        let updated = VoiceEmbedding(
+            userID: userID,
+            vector: normalized,
+            clipCount: newCount,
+            colorIndex: existing.colorIndex
+        )
+        enrolledVoices[userID] = updated
+        saveToDisk()
+
+        logger.info("Enhanced '\(userID)' — now \(newCount) clip(s)")
+        return updated
+    }
+
     /// Update the color index for an enrolled voice.
     public func setColor(userID: String, colorIndex: Int?) {
         guard var voice = enrolledVoices[userID] else { return }

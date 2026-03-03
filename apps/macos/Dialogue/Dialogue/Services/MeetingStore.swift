@@ -260,6 +260,36 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    // MARK: - Save Transcript Entries
+
+    /// Overwrite a meeting's transcript.json with modified entries.
+    ///
+    /// Used after reassigning a segment's speaker in the detail view.
+    /// Also regenerates the plain-text transcript.
+    func saveTranscriptEntries(for meeting: SavedMeeting, entries: [TranscriptEntry]) {
+        guard !entries.isEmpty else { return }
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(entries)
+            try data.write(to: meeting.transcriptURL, options: .atomic)
+
+            // Regenerate plain-text transcript
+            let sorted = entries.sorted { $0.start < $1.start }
+            let lines = sorted.map { entry in
+                let minutes = Int(entry.start) / 60
+                let seconds = Int(entry.start) % 60
+                return String(format: "%d:%02d %@: %@", minutes, seconds, entry.speaker, entry.text)
+            }
+            let txtURL = meeting.folderURL.appendingPathComponent("transcript.txt")
+            try lines.joined(separator: "\n").write(to: txtURL, atomically: true, encoding: .utf8)
+
+            logger.info("Saved \(entries.count) transcript entries for \(meeting.id)")
+        } catch {
+            logger.warning("Failed to save transcript entries: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Load Transcript
 
     /// Load transcript entries from a saved meeting's transcript.json.
