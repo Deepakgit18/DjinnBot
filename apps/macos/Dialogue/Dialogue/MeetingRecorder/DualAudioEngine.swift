@@ -49,9 +49,12 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
         diarizationMode: DiarizationMode = .pyannoteStreaming
     ) async throws {
         logger.info("Starting DualAudioEngine (mic: \(micEnabled), meeting: \(meetingEnabled), diarization: \(diarizationMode.rawValue))")
-        TimelineManager.shared.start()
 
-        // Prepare pipelines in parallel
+        // Prepare pipelines BEFORE starting the timeline clock.
+        // Pipeline preparation loads ML models and can take several seconds.
+        // If the timeline starts before the recorders, transcript timestamps
+        // will be ahead of the audio file (e.g. transcript says 0:23 but
+        // audio doesn't have that speech until 0:29).
         if micEnabled {
             let mic = MicPipeline.createMic(mode: diarizationMode)
             try await mic.prepare()
@@ -64,6 +67,10 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
                 let meeting = MeetingPipeline.createMeeting(mode: diarizationMode)
                 try await meeting.prepare()
                 self.meetingPipeline = meeting
+                // Configure SCStream but DON'T start capture yet.
+                // Capture is started below together with the mic so both
+                // streams begin at the same time — no meeting-audio preamble
+                // that would offset transcript timestamps from the WAV file.
                 try await setupMeetingSCStream()
             } else {
                 logger.warning("No meeting apps detected; skipping meeting audio capture")
@@ -77,7 +84,7 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
             try await remoteRecorder.start()
         }
 
-        // Install mic tap and start engine
+        // Install mic tap (buffers won't flow until audioEngine.start())
         if micEnabled {
             let inputNode = audioEngine.inputNode
             let hwFormat = inputNode.inputFormat(forBus: 0)
@@ -91,7 +98,17 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
         }
 
         audioEngine.prepare()
+
+        // Start the timeline clock and all audio capture simultaneously.
+        // Both mic (audioEngine) and meeting (SCStream) begin here so
+        // WAV file position 0 = transcript time 0 for both streams.
+        TimelineManager.shared.start()
         try audioEngine.start()
+
+        if let stream = scStream {
+            try await stream.startCapture()
+        }
+
         logger.info("DualAudioEngine started")
     }
 
@@ -138,10 +155,11 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
         // the screen output handler is missing even when we only care about audio.
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: scAudioQueue)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: scAudioQueue)
-        try await stream.startCapture()
+        // Don't start capture here — capture is started in start() together
+        // with the mic so both streams begin simultaneously.
         self.scStream = stream
 
-        logger.info("SCStream capturing audio from \(self.meetingApps.count) app(s)")
+        logger.info("SCStream configured for \(self.meetingApps.count) app(s) (capture not yet started)")
     }
 
     // MARK: - Audio Buffer Handling

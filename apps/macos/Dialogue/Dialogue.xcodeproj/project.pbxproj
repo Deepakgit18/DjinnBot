@@ -60,6 +60,7 @@
 		KK000001 /* VoiceID.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK000011 /* VoiceID.swift */; };
 		LL000001 /* PostRecordingRefiner.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL000011 /* PostRecordingRefiner.swift */; };
 		MM00000C /* SFBAudioEngine in Frameworks */ = {isa = PBXBuildFile; productRef = MM000082 /* SFBAudioEngine */; };
+		NN000001 /* MeetingPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN000011 /* MeetingPlayer.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -115,6 +116,7 @@
 		JJ000014 /* VoiceEnrollmentSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceEnrollmentSheet.swift; sourceTree = "<group>"; };
 		KK000011 /* VoiceID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceID.swift; sourceTree = "<group>"; };
 		LL000011 /* PostRecordingRefiner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostRecordingRefiner.swift; sourceTree = "<group>"; };
+		NN000011 /* MeetingPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingPlayer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -250,6 +252,7 @@
 				FF000015 /* MixedWAVRecorder.swift */,
 				FF000016 /* MergeEngine.swift */,
 				LL000011 /* PostRecordingRefiner.swift */,
+				NN000011 /* MeetingPlayer.swift */,
 				II000011 /* RecordingToolbarButton.swift */,
 				II000012 /* LiveTranscriptBanner.swift */,
 				HH000011 /* ModelPreloader.swift */,
@@ -466,6 +469,7 @@
 				JJ000004 /* VoiceEnrollmentSheet.swift in Sources */,
 				KK000001 /* VoiceID.swift in Sources */,
 				LL000001 /* PostRecordingRefiner.swift in Sources */,
+				NN000001 /* MeetingPlayer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

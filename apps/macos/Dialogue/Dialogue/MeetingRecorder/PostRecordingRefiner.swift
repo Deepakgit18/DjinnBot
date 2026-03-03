@@ -544,6 +544,13 @@ final class PostRecordingRefiner {
             }
 
             // ── Pass 2: Temporal overlap for unmapped speakers ──
+            //
+            // The offline VBx diarizer often creates more speaker slots than
+            // the live pipeline (fragmentation). Multiple offline speakers may
+            // actually be the same person. We allow multiple offline speakers
+            // to map to the same live name — the best temporal overlap wins.
+            // Only enrolled voice names (from pass 1) are excluded from reuse,
+            // since those are high-confidence acoustic matches.
             let streamLiveSegments = liveSegments.filter {
                 $0.stream == stream && $0.isFinal && !$0.text.isEmpty
             }
@@ -573,20 +580,14 @@ final class PostRecordingRefiner {
                     }
                 }
 
-                let ranked = liveSpeakerOverlaps.sorted { $0.value > $1.value }
-
-                // Pick the best live name that isn't already used
-                var bestName: String?
-                for (liveName, _) in ranked {
-                    if !usedNames.contains(liveName) {
-                        bestName = liveName
-                        break
-                    }
-                }
+                // Pick the live name with the most temporal overlap.
+                // Allow reuse — only enrolled names (from pass 1) are exclusive.
+                let bestName = liveSpeakerOverlaps
+                    .sorted { $0.value > $1.value }
+                    .first?.key
 
                 let resolvedName = bestName ?? "\(stream.rawValue)-\(offlineSpeakerID)"
                 mapping[key] = resolvedName
-                usedNames.insert(resolvedName)
 
                 let dur = String(format: "%.1f", liveSpeakerOverlaps.values.reduce(0, +))
                 logger.info("[REFINE] Mapping offline \(offlineSpeakerID) → '\(resolvedName)' (\(dur)s temporal overlap)")
@@ -616,10 +617,12 @@ final class PostRecordingRefiner {
     ///
     /// Called after offline refinement completes (or after the live transcript is saved
     /// when refinement is skipped). WAV files are large (~1.9 MB/min at 16kHz mono);
-    /// Opus compresses to ~6 KB/min at quality settings suitable for speech.
+    /// Opus at 32 kbps mono compresses to ~240 KB/min — roughly 8x smaller.
     ///
-    /// Uses SFBAudioEngine's `AudioConverter` which infers the output format from
-    /// the file extension. `.opus` → Ogg Opus.
+    /// Uses SFBAudioEngine's Opus encoder with speech-optimized settings:
+    /// - 32 kbps bitrate (plenty for voice)
+    /// - Voice signal type hint (enables SILK mode for speech)
+    /// - Mono (input is already mono 16kHz; Opus resamples to 48kHz internally)
     func convertWAVsToOpus(in meetingFolder: URL) async {
         let fm = FileManager.default
         let wavNames = ["recording.wav", "local.wav", "remote.wav"]
@@ -635,7 +638,13 @@ final class PostRecordingRefiner {
             let opusURL = meetingFolder.appendingPathComponent(opusName)
 
             do {
-                try AudioConverter.convert(wavURL, to: opusURL)
+                let encoder = try AudioEncoder(url: opusURL, encoderName: .oggOpus)
+                encoder.settings = [
+                    .opusBitrate: 32,
+                    .opusSignalType: OpusSignalType.voice,
+                ]
+                try AudioConverter.convert(wavURL, using: encoder)
+
                 // Delete the WAV original after successful conversion
                 try fm.removeItem(at: wavURL)
                 logger.info("[OPUS] Converted \(wavName) → \(opusName)")
