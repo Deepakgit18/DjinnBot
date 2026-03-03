@@ -2,10 +2,13 @@ import AVFoundation
 import Foundation
 import OSLog
 
-/// Records a 16 kHz mono WAV file from audio streams.
+/// Records a 16 kHz mono WAV file from one or two audio streams.
 ///
 /// Can be used as:
-/// - **Mixed recorder**: receives buffers from both mic and meeting pipelines
+/// - **Mixed recorder**: receives buffers from both mic and meeting streams,
+///   accumulates them in separate internal buffers, and sums (mixes) aligned
+///   samples before writing to disk. This avoids the stuttering caused by
+///   naively interleaving chunks from two independent streams.
 /// - **Per-stream recorder**: receives buffers from a single stream (local or remote)
 ///
 /// The output is suitable for archival and post-hoc re-processing (e.g. full
@@ -19,7 +22,7 @@ actor MixedWAVRecorder {
     private(set) var outputURL: URL?
     private var totalFramesWritten: AVAudioFrameCount = 0
 
-    /// When true, `writeSamples` calls bail immediately. Set by `shutdown()`
+    /// When true, write calls bail immediately. Set by `shutdown()`
     /// so that hundreds of queued write tasks drain instantly without blocking `stop()`.
     private var isShutdown = false
 
@@ -34,10 +37,25 @@ actor MixedWAVRecorder {
         interleaved: false
     )!
 
+    // MARK: - Mixing Buffers
+
+    /// Accumulated samples from the mic (local) stream, not yet flushed.
+    private var micBuffer: [Float] = []
+    /// Accumulated samples from the meeting (remote) stream, not yet flushed.
+    private var meetingBuffer: [Float] = []
+    /// Whether this recorder is operating in mixing mode (two input streams).
+    private let isMixer: Bool
+
     // MARK: - Init
 
-    init(filenamePrefix: String = "meeting") {
+    /// Create a recorder.
+    /// - Parameters:
+    ///   - filenamePrefix: Prefix for the output filename.
+    ///   - isMixer: When true, the recorder expects two input streams (mic + meeting)
+    ///     and sums them before writing. When false, it writes a single stream directly.
+    init(filenamePrefix: String = "meeting", isMixer: Bool = false) {
         self.filenamePrefix = filenamePrefix
+        self.isMixer = isMixer
     }
 
     // MARK: - Lifecycle
@@ -65,30 +83,68 @@ actor MixedWAVRecorder {
         outputURL = url
         totalFramesWritten = 0
         isShutdown = false
-        logger.info("WAV recording started: \(url.lastPathComponent)")
+        micBuffer.removeAll(keepingCapacity: true)
+        meetingBuffer.removeAll(keepingCapacity: true)
+        logger.info("WAV recording started: \(url.lastPathComponent) (mixer: \(self.isMixer))")
     }
 
-    /// Write an audio buffer to the WAV file.
-    ///
-    /// The buffer is first converted to 16 kHz mono if needed.
-    func write(_ buffer: AVAudioPCMBuffer) {
-        guard let converted = MeetingAudioConverter.convertTo16kMono(buffer) else { return }
-        guard let file = audioFile else { return }
-
-        do {
-            try file.write(from: converted)
-            totalFramesWritten += converted.frameLength
-        } catch {
-            logger.error("WAV write error: \(error.localizedDescription)")
-        }
-    }
+    // MARK: - Single-stream Writing
 
     /// Write pre-extracted Float32 samples to the WAV file (Sendable-safe entry point).
     ///
-    /// Reconstructs an `AVAudioPCMBuffer` from the float array inside actor isolation,
-    /// avoiding the need to send non-Sendable `AVAudioPCMBuffer` across boundaries.
+    /// For single-stream recorders (local, remote). Writes directly to the file.
+    /// **Do not use on a mixer recorder** — use `writeMicSamples` / `writeMeetingSamples` instead.
     func writeSamples(_ samples: [Float]) {
-        guard !isShutdown, !samples.isEmpty, let file = audioFile else { return }
+        guard !isShutdown, !samples.isEmpty, audioFile != nil else { return }
+        assert(!isMixer, "writeSamples called on a mixer recorder — use writeMicSamples/writeMeetingSamples")
+        flushSamplesToFile(samples)
+    }
+
+    // MARK: - Mixer Writing
+
+    /// Append mic (local) samples to the mixing buffer.
+    /// Aligned samples are mixed and flushed to disk automatically.
+    func writeMicSamples(_ samples: [Float]) {
+        guard !isShutdown, !samples.isEmpty, audioFile != nil else { return }
+        micBuffer.append(contentsOf: samples)
+        flushMixedSamples()
+    }
+
+    /// Append meeting (remote) samples to the mixing buffer.
+    /// Aligned samples are mixed and flushed to disk automatically.
+    func writeMeetingSamples(_ samples: [Float]) {
+        guard !isShutdown, !samples.isEmpty, audioFile != nil else { return }
+        meetingBuffer.append(contentsOf: samples)
+        flushMixedSamples()
+    }
+
+    /// Sum aligned samples from both buffers and write them to the file.
+    ///
+    /// After each write call from either stream, we flush however many samples
+    /// are available from BOTH buffers (the aligned portion). This ensures
+    /// the output is a proper additive mix rather than interleaved chunks.
+    private func flushMixedSamples() {
+        let count = min(micBuffer.count, meetingBuffer.count)
+        guard count > 0 else { return }
+
+        // Sum the two streams, clamping to [-1, 1]
+        var mixed = [Float](repeating: 0, count: count)
+        for i in 0..<count {
+            mixed[i] = max(-1.0, min(1.0, micBuffer[i] + meetingBuffer[i]))
+        }
+
+        // Remove flushed samples from both buffers
+        micBuffer.removeFirst(count)
+        meetingBuffer.removeFirst(count)
+
+        flushSamplesToFile(mixed)
+    }
+
+    // MARK: - Shared File Writing
+
+    /// Write Float32 samples to the AVAudioFile.
+    private func flushSamplesToFile(_ samples: [Float]) {
+        guard let file = audioFile else { return }
         guard let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: AVAudioFrameCount(samples.count)) else { return }
         buffer.frameLength = AVAudioFrameCount(samples.count)
         guard let channelData = buffer.floatChannelData else { return }
@@ -103,15 +159,34 @@ actor MixedWAVRecorder {
         }
     }
 
+    // MARK: - Shutdown / Stop
+
     /// Signal the recorder to stop accepting new writes.
-    /// Pending `writeSamples` tasks on the actor queue will bail immediately
+    /// Pending write tasks on the actor queue will bail immediately
     /// instead of writing, allowing `stop()` to run without waiting for a backlog.
     func shutdown() {
         isShutdown = true
     }
 
     /// Stop recording and return the file URL.
+    ///
+    /// For mixer recorders, flushes any remaining samples from either buffer
+    /// (the other stream is assumed to be silence for those trailing samples).
     func stop() -> URL? {
+        // Flush any remaining unaligned samples from the mixer buffers.
+        // One stream may have delivered more samples than the other —
+        // write those out as-is (the missing stream is silence / zero).
+        if isMixer {
+            if !micBuffer.isEmpty {
+                flushSamplesToFile(micBuffer)
+                micBuffer.removeAll()
+            }
+            if !meetingBuffer.isEmpty {
+                flushSamplesToFile(meetingBuffer)
+                meetingBuffer.removeAll()
+            }
+        }
+
         let url = outputURL
         let frames = totalFramesWritten
         audioFile = nil
@@ -123,6 +198,23 @@ actor MixedWAVRecorder {
             logger.info("WAV recording stopped: \(url.lastPathComponent) (\(String(format: "%.1f", durationSec))s)")
         }
         return url
+    }
+
+    // MARK: - Legacy
+
+    /// Write an audio buffer to the WAV file.
+    ///
+    /// The buffer is first converted to 16 kHz mono if needed.
+    func write(_ buffer: AVAudioPCMBuffer) {
+        guard let converted = MeetingAudioConverter.convertTo16kMono(buffer) else { return }
+        guard let file = audioFile else { return }
+
+        do {
+            try file.write(from: converted)
+            totalFramesWritten += converted.frameLength
+        } catch {
+            logger.error("WAV write error: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Directory

@@ -23,7 +23,7 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
     // MARK: - Properties
 
     private let audioEngine = AVAudioEngine()
-    private let mixedRecorder = MixedWAVRecorder(filenamePrefix: "meeting")
+    private let mixedRecorder = MixedWAVRecorder(filenamePrefix: "meeting", isMixer: true)
     private let localRecorder = MixedWAVRecorder(filenamePrefix: "local")
     private let remoteRecorder = MixedWAVRecorder(filenamePrefix: "remote")
     private var micPipeline: RealtimePipeline?
@@ -162,7 +162,7 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
             let wavSamples = MeetingAudioConverter.toFloatArray(converted)
             if !wavSamples.isEmpty {
                 Task {
-                    await mixed.writeSamples(wavSamples)
+                    await mixed.writeMicSamples(wavSamples)
                     await local.writeSamples(wavSamples)
                 }
             }
@@ -186,7 +186,7 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
             let wavSamples = MeetingAudioConverter.toFloatArray(converted)
             if !wavSamples.isEmpty {
                 Task {
-                    await mixed.writeSamples(wavSamples)
+                    await mixed.writeMeetingSamples(wavSamples)
                     await remote.writeSamples(wavSamples)
                 }
             }
