@@ -1,3 +1,4 @@
+import KeyboardShortcuts
 import SwiftUI
 
 /// Settings view for managing API key and app preferences.
@@ -306,6 +307,19 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Voice Command")
+                        .font(.headline)
+
+                    Text("Press and hold this keyboard shortcut to activate voice command mode. The shortcut works globally, even when the app is in the background.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                KeyboardShortcuts.Recorder("Shortcut:", name: .voiceCommand)
             }
 
             Section {

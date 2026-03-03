@@ -38,6 +38,12 @@ final class MeetingRecorderController: ObservableObject {
     @Published var recordingDuration: TimeInterval = 0
     @Published var errorMessage: String?
 
+    /// Current microphone audio level (0–1). Read directly from DualAudioEngine
+    /// (written on audio thread, read on main thread by TimelineView at 60fps).
+    var micAudioLevel: Float { dualEngine.micLevel }
+    /// Current meeting app audio level (0–1).
+    var meetingAudioLevel: Float { dualEngine.meetingLevel }
+
     /// Guards against duplicate start calls while awaiting pipeline setup.
     @Published var isStarting = false
 

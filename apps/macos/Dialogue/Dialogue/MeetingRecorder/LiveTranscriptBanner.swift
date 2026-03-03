@@ -166,7 +166,7 @@ struct LiveTranscriptBanner: View {
         }
     }
 
-    // MARK: - Collapsed Bar (chevron + indicator in one row)
+    // MARK: - Collapsed Bar (waveform + recording indicator)
 
     private var collapsedBar: some View {
         Button {
@@ -175,34 +175,42 @@ struct LiveTranscriptBanner: View {
                 userDidManuallyExpand = true
             }
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+            ZStack {
+                // Full-width voice activity waveform
+                WaveformBarView(
+                    audioLevel: max(recorder.micAudioLevel, recorder.meetingAudioLevel),
+                    isRecording: recorder.isRecording
+                )
+                    .frame(height: collapsedBarHeight)
+                    .opacity(0.6)
 
-                Circle()
-                    .fill(Color.red)
-                    .frame(width: 6, height: 6)
+                // Overlay: recording dot + duration on the left, chevron on the right
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 6, height: 6)
 
-                Text("Transcribing" + String(repeating: ".", count: dotCount))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 100, alignment: .leading)
+                    if recorder.isRecording {
+                        Text(recorder.formattedDuration)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
 
-                if recorder.isRecording {
-                    Text(recorder.formattedDuration)
-                        .font(.system(.caption, design: .monospaced))
+                    Spacer()
+
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
-
-                Spacer()
+                .padding(.horizontal, 12)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
+            .frame(height: collapsedBarHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
+
+    private let collapsedBarHeight: CGFloat = 24
 
     // MARK: - Toggle Bar (expanded state only)
 

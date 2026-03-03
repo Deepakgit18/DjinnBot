@@ -48,6 +48,15 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
     /// Serial queue for ScreenCaptureKit audio callbacks.
     private let scAudioQueue = DispatchQueue(label: "bot.djinn.app.dialog.sc-audio", qos: .userInteractive)
 
+    // MARK: - Audio Levels
+
+    /// Current microphone RMS level (0–1). Updated on every mic buffer callback.
+    /// Read from the main thread; written from the audio thread.
+    private(set) var micLevel: Float = 0
+
+    /// Current meeting app RMS level (0–1). Updated on every meeting buffer callback.
+    private(set) var meetingLevel: Float = 0
+
     // MARK: - Start
 
     /// Start capturing audio from mic and/or meeting apps.
@@ -215,6 +224,9 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
 
         micPipeline?.processBuffer(buffer, at: time)
 
+        // Compute RMS for the waveform visualization.
+        micLevel = Self.rmsLevel(of: buffer)
+
         // Convert to 16 kHz mono using the persistent converter.
         let converted: AVAudioPCMBuffer
         if let converter = micConverter, let outBuf = micConvertBuffer {
@@ -261,6 +273,9 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
 
         meetingPipeline?.processBuffer(buffer, at: time)
 
+        // Compute RMS for the waveform visualization.
+        meetingLevel = Self.rmsLevel(of: buffer)
+
         // Convert to 16kHz mono before recording — SCStream is configured for
         // 16kHz but we convert defensively in case the format differs.
         let mixed = self.mixedRecorder
@@ -274,6 +289,49 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
                 }
             }
         }
+    }
+
+    // MARK: - Audio Level Helpers
+
+    /// Compute RMS (root mean square) amplitude from a PCM buffer, normalized to 0–1.
+    /// Handles float32 (mic tap), int16, and int32 (SCStream) formats.
+    private static func rmsLevel(of buffer: AVAudioPCMBuffer) -> Float {
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else { return 0 }
+
+        var sumOfSquares: Float = 0
+
+        if let floatData = buffer.floatChannelData {
+            // Float32 — typical for AVAudioEngine mic tap
+            let samples = floatData[0]
+            for i in 0..<frames {
+                let s = samples[i]
+                sumOfSquares += s * s
+            }
+        } else if let int16Data = buffer.int16ChannelData {
+            // Int16 — typical for SCStream audio
+            let samples = int16Data[0]
+            let scale: Float = 1.0 / 32768.0
+            for i in 0..<frames {
+                let s = Float(samples[i]) * scale
+                sumOfSquares += s * s
+            }
+        } else if let int32Data = buffer.int32ChannelData {
+            // Int32 — sometimes used by SCStream
+            let samples = int32Data[0]
+            let scale: Float = 1.0 / 2_147_483_648.0
+            for i in 0..<frames {
+                let s = Float(samples[i]) * scale
+                sumOfSquares += s * s
+            }
+        } else {
+            return 0
+        }
+
+        let rms = sqrtf(sumOfSquares / Float(frames))
+        // Scale: raw RMS of normal speech is ~0.01–0.1. Multiply by 3 and clamp
+        // to get a usable 0–1 range for the waveform visualization.
+        return min(rms * 3.0, 1.0)
     }
 
     // MARK: - Stop Result

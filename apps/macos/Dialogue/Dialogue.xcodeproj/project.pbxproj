@@ -61,6 +61,11 @@
 		LL000001 /* PostRecordingRefiner.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL000011 /* PostRecordingRefiner.swift */; };
 		MM00000C /* SFBAudioEngine in Frameworks */ = {isa = PBXBuildFile; productRef = MM000082 /* SFBAudioEngine */; };
 		NN000001 /* MeetingPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN000011 /* MeetingPlayer.swift */; };
+		PP00000C /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = PP000082 /* KeyboardShortcuts */; };
+		PP000001 /* VoiceCommandManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000011 /* VoiceCommandManager.swift */; };
+		PP000002 /* VoiceCommandOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000012 /* VoiceCommandOverlay.swift */; };
+		PP000003 /* LoadingIndicatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000013 /* LoadingIndicatorView.swift */; };
+		PP000004 /* LoadingIcon in Resources */ = {isa = PBXBuildFile; fileRef = PP000020 /* LoadingIcon */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -117,6 +122,10 @@
 		KK000011 /* VoiceID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceID.swift; sourceTree = "<group>"; };
 		LL000011 /* PostRecordingRefiner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostRecordingRefiner.swift; sourceTree = "<group>"; };
 		NN000011 /* MeetingPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingPlayer.swift; sourceTree = "<group>"; };
+		PP000011 /* VoiceCommandManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandManager.swift; sourceTree = "<group>"; };
+		PP000012 /* VoiceCommandOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandOverlay.swift; sourceTree = "<group>"; };
+		PP000013 /* LoadingIndicatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoadingIndicatorView.swift; sourceTree = "<group>"; };
+		PP000020 /* LoadingIcon */ = {isa = PBXFileReference; lastKnownFileType = folder; path = LoadingIcon; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -128,6 +137,7 @@
 				DD000090 /* MarkdownUI in Frameworks */,
 				CC000090 /* Speech.framework in Frameworks */,
 				MM00000C /* SFBAudioEngine in Frameworks */,
+				PP00000C /* KeyboardShortcuts in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -162,6 +172,8 @@
 				BB000033 /* UI */,
 				DD000030 /* Chat */,
 				FF000030 /* MeetingRecorder */,
+				PP000030 /* VoiceCommand */,
+				PP000031 /* Resources */,
 				AA000016 /* Dialogue.entitlements */,
 				AA000013 /* Assets.xcassets */,
 				AA000033 /* Preview Content */,
@@ -313,6 +325,24 @@
 			path = Utils;
 			sourceTree = "<group>";
 		};
+		PP000030 /* VoiceCommand */ = {
+			isa = PBXGroup;
+			children = (
+				PP000011 /* VoiceCommandManager.swift */,
+				PP000012 /* VoiceCommandOverlay.swift */,
+				PP000013 /* LoadingIndicatorView.swift */,
+			);
+			path = VoiceCommand;
+			sourceTree = "<group>";
+		};
+		PP000031 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				PP000020 /* LoadingIcon */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -334,6 +364,7 @@
 				CC000082 /* FluidAudio */,
 				DD000091 /* MarkdownUI */,
 				MM000082 /* SFBAudioEngine */,
+				PP000082 /* KeyboardShortcuts */,
 			);
 			productName = Dialogue;
 			productReference = AA000010 /* Dialogue.app */;
@@ -367,6 +398,7 @@
 				CC000071 /* XCRemoteSwiftPackageReference "FluidAudio" */,
 				DD000080 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 				MM000071 /* XCRemoteSwiftPackageReference "SFBAudioEngine" */,
+				PP000071 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */,
 			);
 			productRefGroup = AA000032 /* Products */;
 			projectDirPath = "";
@@ -385,6 +417,7 @@
 				AA000004 /* Preview Assets.xcassets in Resources */,
 				AA000003 /* Assets.xcassets in Resources */,
 				AA000005 /* index.html in Resources */,
+				PP000004 /* LoadingIcon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -470,6 +503,9 @@
 				KK000001 /* VoiceID.swift in Sources */,
 				LL000001 /* PostRecordingRefiner.swift in Sources */,
 				NN000001 /* MeetingPlayer.swift in Sources */,
+				PP000001 /* VoiceCommandManager.swift in Sources */,
+				PP000002 /* VoiceCommandOverlay.swift in Sources */,
+				PP000003 /* LoadingIndicatorView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -713,6 +749,14 @@
 				minimumVersion = 0.12.1;
 			};
 		};
+		PP000071 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sindresorhus/KeyboardShortcuts.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -730,6 +774,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = MM000071 /* XCRemoteSwiftPackageReference "SFBAudioEngine" */;
 			productName = SFBAudioEngine;
+		};
+		PP000082 /* KeyboardShortcuts */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = PP000071 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */;
+			productName = KeyboardShortcuts;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

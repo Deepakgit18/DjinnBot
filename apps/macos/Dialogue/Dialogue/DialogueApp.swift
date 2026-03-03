@@ -16,6 +16,9 @@ struct DialogueApp: App {
                     if #available(macOS 26.0, *) {
                         ModelPreloader.shared.preload()
                     }
+
+                    // Register the global voice command hotkey.
+                    _ = VoiceCommandManager.shared
                 }
         }
         .commands {
