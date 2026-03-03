@@ -1,0 +1,132 @@
+name: Build Dialogue macOS App
+
+on:
+  push:
+    tags: ["app-v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_DIR: apps/macos/Dialogue
+  SCHEME: Dialogue
+  ARCHIVE_PATH: apps/macos/Dialogue/build/Dialogue.xcarchive
+  EXPORT_PATH: apps/macos/Dialogue/build/export
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          # Use the default Xcode 26 on the macos-26 runner
+          xcodebuild -version
+
+      - name: Install certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          # Create a temporary keychain for CI
+          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import the Developer ID certificate
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          echo "$CERTIFICATE_P12" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          rm "$CERT_PATH"
+
+          # Add the temporary keychain to the search list
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN_PATH"
+
+          # Allow codesign to access the keychain without prompting
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Verify the certificate is available
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Resolve SPM dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT_DIR/Dialogue.xcodeproj" \
+            -scheme "$SCHEME" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm"
+
+      - name: Archive
+        run: |
+          xcodebuild archive \
+            -project "$PROJECT_DIR/Dialogue.xcodeproj" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -archivePath "$ARCHIVE_PATH" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm" \
+            ARCHS=arm64 \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM=8H548FVL95 \
+            ENABLE_HARDENED_RUNTIME=YES \
+            OTHER_CODE_SIGN_FLAGS="--timestamp" \
+            | xcbeautify || true
+
+      - name: Export archive
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$PROJECT_DIR/build/ExportOptions.plist" \
+            -exportPath "$EXPORT_PATH"
+
+      - name: Notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: 8H548FVL95
+        run: |
+          # Create a zip for notarization submission
+          ditto -c -k --keepParent "$EXPORT_PATH/Dialogue.app" "$RUNNER_TEMP/Dialogue-notarize.zip"
+
+          # Submit for notarization
+          xcrun notarytool submit "$RUNNER_TEMP/Dialogue-notarize.zip" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 15m
+
+          # Staple the notarization ticket to the app
+          xcrun stapler staple "$EXPORT_PATH/Dialogue.app"
+
+      - name: Create distributable zip
+        run: |
+          ditto -c -k --keepParent \
+            "$EXPORT_PATH/Dialogue.app" \
+            "$EXPORT_PATH/Dialogue.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dialogue-${{ github.ref_name }}
+          path: ${{ env.EXPORT_PATH }}/Dialogue.zip
+          if-no-files-found: error
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+          if [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi
