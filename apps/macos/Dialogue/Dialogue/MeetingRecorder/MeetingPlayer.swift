@@ -107,32 +107,54 @@ final class MeetingPlayer: NSObject, ObservableObject {
     /// Play from `startTime`, stopping automatically at `endTime`.
     func playSegment(url: URL, from startTime: TimeInterval, to endTime: TimeInterval) {
         segmentEndTime = endTime
-        do {
-            try player.play(url)
-            loadedURL = url
+        if loadedURL == url && (isPlaying || isPaused) {
+            // Same file already loaded — just seek to the new position.
+            // Re-opening the file would reset to position 0 and race with
+            // the seek, causing the playback to jump to the beginning.
             _ = player.seek(time: startTime)
+            if isPaused { _ = player.resume() }
             isPlaying = true
             isPaused = false
             currentTime = startTime
             startPolling()
-        } catch {
-            logger.error("Segment playback failed: \(error.localizedDescription)")
+        } else {
+            do {
+                try player.play(url)
+                loadedURL = url
+                _ = player.seek(time: startTime)
+                isPlaying = true
+                isPaused = false
+                currentTime = startTime
+                startPolling()
+            } catch {
+                logger.error("Segment playback failed: \(error.localizedDescription)")
+            }
         }
     }
 
     /// Seek to `startTime` and play from there (no end bound).
     func playFrom(url: URL, time startTime: TimeInterval) {
         segmentEndTime = nil
-        do {
-            try player.play(url)
-            loadedURL = url
+        if loadedURL == url && (isPlaying || isPaused) {
+            // Same file — seek in place without re-opening.
             _ = player.seek(time: startTime)
+            if isPaused { _ = player.resume() }
             isPlaying = true
             isPaused = false
             currentTime = startTime
             startPolling()
-        } catch {
-            logger.error("Play-from failed: \(error.localizedDescription)")
+        } else {
+            do {
+                try player.play(url)
+                loadedURL = url
+                _ = player.seek(time: startTime)
+                isPlaying = true
+                isPaused = false
+                currentTime = startTime
+                startPolling()
+            } catch {
+                logger.error("Play-from failed: \(error.localizedDescription)")
+            }
         }
     }
 

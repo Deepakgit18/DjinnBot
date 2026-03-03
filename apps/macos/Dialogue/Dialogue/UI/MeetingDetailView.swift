@@ -15,6 +15,15 @@ struct MeetingDetailView: View {
     @State private var loadError: String?
     @StateObject private var player = MeetingPlayer()
 
+    /// Observe refinement progress so we can reload after opus conversion.
+    @ObservedObject private var refinementProgress = RefinementProgress.shared
+
+    /// Dynamic recording check — the `SavedMeeting` snapshot may be stale
+    /// (created before post-refinement converted WAVs to opus).
+    private var hasRecording: Bool {
+        FileManager.default.fileExists(atPath: meeting.recordingURL.path)
+    }
+
     // MARK: - Context Menu State
 
     /// The entry selected for enrollment / enhance operations.
@@ -43,8 +52,8 @@ struct MeetingDetailView: View {
                 header
                 Divider()
 
-                // Transport controls
-                if meeting.hasRecording {
+                // Transport controls — use dynamic file check, not stale snapshot
+                if hasRecording {
                     transportBar
                     Divider()
                 }
@@ -73,6 +82,12 @@ struct MeetingDetailView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { loadTranscript() }
         .onDisappear { player.stop() }
+        .onChange(of: refinementProgress.state) { _, newState in
+            // Reload transcript + re-check recording after refinement finishes.
+            if case .complete = newState {
+                loadTranscript()
+            }
+        }
         .alert("Error", isPresented: $showError) {
             Button("OK") {}
         } message: {
@@ -192,7 +207,7 @@ struct MeetingDetailView: View {
                         entry: entry,
                         player: player,
                         recordingURL: meeting.recordingURL,
-                        hasRecording: meeting.hasRecording,
+                        hasRecording: hasRecording,
                         enrolledVoices: VoiceID.shared.allEnrolledVoices(),
                         onEnroll: { e in
                             selectedEntry = e

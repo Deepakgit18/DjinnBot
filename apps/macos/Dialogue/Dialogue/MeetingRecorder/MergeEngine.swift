@@ -729,6 +729,7 @@ final class MergeEngine: ObservableObject {
             if var last = result.last,
                last.speaker == segment.speaker,
                last.stream == segment.stream,
+               last.speaker != "Speaker-?",   // Never collapse unattributed placeholders
                segment.start - last.end < maxGap {
                 last.end = max(last.end, segment.end)
                 if !segment.text.isEmpty {

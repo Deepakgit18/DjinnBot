@@ -170,6 +170,7 @@ struct ContentView: View {
                 .onAppear { appState.navigateHome() }
         case .meetingDetail(let meeting):
             MeetingDetailView(meeting: meeting)
+                .id(meeting.id)
                 .frame(minWidth: 500, minHeight: 400)
         }
     }
