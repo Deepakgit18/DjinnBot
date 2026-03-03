@@ -153,15 +153,18 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
 
         micPipeline?.processBuffer(buffer, at: time)
 
-        // Write to WAV recorders (mixed + local). We deep-copy and use
-        // nonisolated(unsafe) because AVAudioPCMBuffer is not Sendable
-        // but our copy is exclusively owned.
+        // Convert to 16kHz mono BEFORE extracting samples for WAV recording.
+        // The mic hardware format is typically 48kHz — writing those samples
+        // as-is into a 16kHz WAV file produces 3x slow-mo audio.
         let mixed = self.mixedRecorder
         let local = self.localRecorder
-        if let wavSamples = MeetingAudioConverter.toFloatArray(buffer) as [Float]? {
-            Task {
-                await mixed.writeSamples(wavSamples)
-                await local.writeSamples(wavSamples)
+        if let converted = MeetingAudioConverter.convertTo16kMono(buffer) {
+            let wavSamples = MeetingAudioConverter.toFloatArray(converted)
+            if !wavSamples.isEmpty {
+                Task {
+                    await mixed.writeSamples(wavSamples)
+                    await local.writeSamples(wavSamples)
+                }
             }
         }
     }
@@ -175,12 +178,17 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
 
         meetingPipeline?.processBuffer(buffer, at: time)
 
+        // Convert to 16kHz mono before recording — SCStream is configured for
+        // 16kHz but we convert defensively in case the format differs.
         let mixed = self.mixedRecorder
         let remote = self.remoteRecorder
-        if let wavSamples = MeetingAudioConverter.toFloatArray(buffer) as [Float]? {
-            Task {
-                await mixed.writeSamples(wavSamples)
-                await remote.writeSamples(wavSamples)
+        if let converted = MeetingAudioConverter.convertTo16kMono(buffer) {
+            let wavSamples = MeetingAudioConverter.toFloatArray(converted)
+            if !wavSamples.isEmpty {
+                Task {
+                    await mixed.writeSamples(wavSamples)
+                    await remote.writeSamples(wavSamples)
+                }
             }
         }
     }

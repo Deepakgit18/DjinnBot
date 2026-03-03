@@ -56,7 +56,7 @@ private struct StatusFooterContent: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-        case .processingStream, .reattributing:
+        case .diarizing, .transcribing, .buildingTranscript:
             ProgressView()
                 .controlSize(.small)
             Text(refinement.description)

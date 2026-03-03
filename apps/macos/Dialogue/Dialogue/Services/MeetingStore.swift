@@ -44,12 +44,15 @@ struct WordTimingEntry: Codable {
     let words: [WordTiming]
 }
 
-/// Manages the ~/Documents/Dialog/Meetings directory.
+/// Manages the Meetings subdirectory inside the Dialogue folder.
 ///
 /// Responsible for:
 /// - Saving recordings (WAV + transcript JSON) into per-meeting folders
 /// - Scanning the directory and publishing the list of saved meetings
 /// - Loading transcript data for display
+///
+/// The root folder is derived from `DocumentManager.dialogueFolder`/Meetings
+/// and updates when the user changes the Dialogue Folder in Settings.
 final class MeetingStore: ObservableObject {
     static let shared = MeetingStore()
 
@@ -60,12 +63,20 @@ final class MeetingStore: ObservableObject {
     private let logger = Logger(subsystem: "bot.djinn.app.dialog", category: "MeetingStore")
     private var watcher: DispatchSourceFileSystemObject?
 
-    /// Root directory: ~/Documents/Dialog/Meetings
-    let rootFolder: URL
+    /// Root directory: {dialogueFolder}/Meetings
+    private(set) var rootFolder: URL
 
     private init() {
-        let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-        rootFolder = docs.appendingPathComponent("Dialog/Meetings", isDirectory: true)
+        rootFolder = DocumentManager.dialogueFolder.appendingPathComponent("Meetings", isDirectory: true)
+        try? fileManager.createDirectory(at: rootFolder, withIntermediateDirectories: true)
+        refresh()
+        startWatching()
+    }
+
+    /// Re-derive rootFolder from the current dialogueFolder setting.
+    func reloadFromDialogueFolder() {
+        stopWatching()
+        rootFolder = DocumentManager.dialogueFolder.appendingPathComponent("Meetings", isDirectory: true)
         try? fileManager.createDirectory(at: rootFolder, withIntermediateDirectories: true)
         refresh()
         startWatching()
@@ -75,7 +86,7 @@ final class MeetingStore: ObservableObject {
 
     /// Save a completed meeting recording and transcript to disk.
     ///
-    /// Creates ~/Documents/Dialog/Meetings/{name}/recording.wav, local.wav,
+    /// Creates {dialogueFolder}/Meetings/{name}/recording.wav, local.wav,
     /// remote.wav, and transcript.json.
     ///
     /// - Parameters:
@@ -313,6 +324,11 @@ final class MeetingStore: ObservableObject {
     }
 
     // MARK: - File Watching
+
+    private func stopWatching() {
+        watcher?.cancel()
+        watcher = nil
+    }
 
     private func startWatching() {
         let fd = open(rootFolder.path, O_EVTONLY)

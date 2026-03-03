@@ -4,8 +4,29 @@ import Combine
 /// Manages the default documents folder and provides directory listing for the sidebar.
 final class DocumentManager: ObservableObject {
     static let shared = DocumentManager()
-    
-    /// The root folder for Dialogue documents.
+
+    /// UserDefaults key for the top-level Dialogue folder (parent of Notes and Meetings).
+    static let dialogueFolderKey = "dialogueFolder"
+
+    /// Returns the current top-level Dialogue folder from UserDefaults,
+    /// defaulting to ~/Documents/Dialogue.
+    static var dialogueFolder: URL {
+        if let stored = UserDefaults.standard.string(forKey: dialogueFolderKey),
+           !stored.isEmpty {
+            return URL(fileURLWithPath: stored, isDirectory: true)
+        }
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        return docs.appendingPathComponent("Dialogue", isDirectory: true)
+    }
+
+    /// Persist a new top-level Dialogue folder and notify both DocumentManager and MeetingStore.
+    static func setDialogueFolder(_ url: URL) {
+        UserDefaults.standard.set(url.path, forKey: dialogueFolderKey)
+        shared.reloadFromDialogueFolder()
+        MeetingStore.shared.reloadFromDialogueFolder()
+    }
+
+    /// The root folder for Notes (dialogueFolder/Notes).
     @Published var rootFolder: URL
     
     /// Discovered .blocknote files, grouped by relative folder path.
@@ -15,16 +36,18 @@ final class DocumentManager: ObservableObject {
     private let fileManager = FileManager.default
     
     private init() {
-        // Default root: ~/Documents/Dialogue/Notes
-        let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let defaultRoot = docs.appendingPathComponent("Dialogue/Notes", isDirectory: true)
-        
-        // Ensure the folder exists
-        try? fileManager.createDirectory(at: defaultRoot, withIntermediateDirectories: true)
-        
-        self.rootFolder = defaultRoot
+        let notesRoot = Self.dialogueFolder.appendingPathComponent("Notes", isDirectory: true)
+        try? fileManager.createDirectory(at: notesRoot, withIntermediateDirectories: true)
+        self.rootFolder = notesRoot
         refresh()
         startWatching()
+    }
+
+    /// Re-derive rootFolder from the current dialogueFolder setting.
+    func reloadFromDialogueFolder() {
+        let notesRoot = Self.dialogueFolder.appendingPathComponent("Notes", isDirectory: true)
+        try? fileManager.createDirectory(at: notesRoot, withIntermediateDirectories: true)
+        setRootFolder(notesRoot)
     }
     
     // MARK: - Public API

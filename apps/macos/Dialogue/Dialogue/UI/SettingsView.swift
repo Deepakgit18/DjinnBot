@@ -33,9 +33,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     /// The top-level Dialogue folder (parent of Notes and Meetings).
-    private var dialogueFolder: URL {
-        DocumentManager.shared.rootFolder.deletingLastPathComponent()
-    }
+    @State private var dialogueFolder: URL = DocumentManager.dialogueFolder
 
     enum SaveStatus: Equatable {
         case idle, saving, saved, error(String)
@@ -320,6 +318,8 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
 
                     HStack {
+                        Image(systemName: "folder.fill")
+                            .foregroundStyle(.secondary)
                         Text(dialogueFolder.path)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -327,6 +327,11 @@ struct SettingsView: View {
                             .truncationMode(.middle)
 
                         Spacer()
+
+                        Button("Change...") {
+                            chooseDialogueFolder()
+                        }
+                        .buttonStyle(.bordered)
 
                         Button("Open in Finder") {
                             NSWorkspace.shared.open(dialogueFolder)
@@ -358,6 +363,21 @@ struct SettingsView: View {
 
     private func loadVoices() {
         voices = VoiceID.shared.allEnrolledVoices()
+    }
+
+    private func chooseDialogueFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Dialogue Folder"
+        panel.message = "Select the folder where Meetings and Notes will be stored."
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = dialogueFolder
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        DocumentManager.setDialogueFolder(url)
+        dialogueFolder = url
     }
 
     private func loadExistingKey() {

@@ -129,7 +129,7 @@ final class MeetingRecorderController: ObservableObject {
     /// Stop recording and return metadata about the session.
     ///
     /// Saves the recording WAV and transcript JSON to
-    /// ~/Documents/Dialog/Meetings/{timestamp}/ and refreshes
+    /// {dialogueFolder}/Meetings/{timestamp}/ and refreshes
     /// the MeetingStore so the sidebar updates immediately.
     ///
     /// Returns the WAV file URL and recording metadata, or nil if
@@ -181,7 +181,7 @@ final class MeetingRecorderController: ObservableObject {
             logger.warning("Failed to save metadata: \(error.localizedDescription)")
         }
 
-        // Save to ~/Documents/Dialog/Meetings/
+        // Save to {dialogueFolder}/Meetings/
         let segments = mergedSegments
         let saved = MeetingStore.shared.saveMeeting(
             name: nil,
