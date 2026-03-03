@@ -41,6 +41,9 @@ final class MeetingRecorderController: ObservableObject {
     /// Guards against duplicate start calls while awaiting pipeline setup.
     @Published var isStarting = false
 
+    /// Human-readable status message shown in the footer during startup.
+    @Published var preparationStatus: String?
+
     // MARK: - Settings
 
     /// Selects the diarization backend: Sortformer (fast, max 4 speakers)
@@ -76,6 +79,7 @@ final class MeetingRecorderController: ObservableObject {
     func start() async {
         guard !isRecording, !isStarting else { return }
         isStarting = true
+        preparationStatus = "Detecting meeting apps…"
         errorMessage = nil
 
         do {
@@ -87,9 +91,11 @@ final class MeetingRecorderController: ObservableObject {
             logger.info("Starting recording. Detected apps: \(self.detectedMeetingApps), mode: \(self.diarizationMode.rawValue)")
 
             // Reset merge engine for fresh recording
+            preparationStatus = "Preparing pipelines…"
             mergeEngine.reset()
 
             // Start dual audio capture with the selected diarization mode
+            preparationStatus = "Starting audio capture…"
             try await dualEngine.start(
                 micEnabled: true,
                 meetingEnabled: !meetingApps.isEmpty,
@@ -115,10 +121,12 @@ final class MeetingRecorderController: ObservableObject {
 
             isRecording = true
             isStarting = false
+            preparationStatus = nil
             logger.info("Recording started")
 
         } catch {
             isStarting = false
+            preparationStatus = nil
             logger.error("Failed to start recording: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
         }

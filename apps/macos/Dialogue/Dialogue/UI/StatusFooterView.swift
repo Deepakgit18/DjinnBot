@@ -5,9 +5,13 @@ import SwiftUI
 /// A persistent footer bar at the bottom of the main window.
 /// Shows model download progress, detected meeting apps, and recording preparation status.
 struct StatusFooterView: View {
+    /// Optional recorder reference for showing preparation status.
+    var preparationStatus: String?
+    var isStarting: Bool = false
+
     var body: some View {
         if #available(macOS 26.0, *) {
-            StatusFooterContent()
+            StatusFooterContent(preparationStatus: preparationStatus, isStarting: isStarting)
         } else {
             EmptyView()
         }
@@ -19,12 +23,17 @@ private struct StatusFooterContent: View {
     @ObservedObject private var preloader = ModelPreloader.shared
     @ObservedObject private var refinement = RefinementProgress.shared
 
+    var preparationStatus: String?
+    var isStarting: Bool = false
+
     var body: some View {
         VStack(spacing: 0) {
             Divider()
             HStack(spacing: 8) {
                 if refinement.isActive || isRefinementResult {
                     refinementContent
+                } else if isStarting, let status = preparationStatus {
+                    recordingPreparationContent(status)
                 } else {
                     preloaderContent
                 }
@@ -42,6 +51,17 @@ private struct StatusFooterContent: View {
         case .complete, .failed: return true
         default: return false
         }
+    }
+
+    // MARK: - Recording Preparation
+
+    @ViewBuilder
+    private func recordingPreparationContent(_ status: String) -> some View {
+        ProgressView()
+            .controlSize(.small)
+        Text(status)
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 
     // MARK: - Refinement Progress

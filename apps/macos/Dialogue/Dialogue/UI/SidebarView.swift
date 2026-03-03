@@ -24,6 +24,8 @@ struct SidebarView: View {
 
     var onSelectMeetingRecorder: () -> Void = {}
     var onSelectMeeting: (SavedMeeting) -> Void = { _ in }
+    var onDeleteMeeting: (SavedMeeting) -> Void = { _ in }
+    var onRenameMeeting: (SavedMeeting, String) -> Void = { _, _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -59,7 +61,12 @@ struct SidebarView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
             } else {
-                MeetingsListView(meetings: meetingStore.meetings, onSelect: onSelectMeeting)
+                MeetingsListView(
+                    meetings: meetingStore.meetings,
+                    onSelect: onSelectMeeting,
+                    onDelete: onDeleteMeeting,
+                    onRename: onRenameMeeting
+                )
             }
         }
         .frame(minWidth: 200, idealWidth: 240, maxWidth: 320)
@@ -188,6 +195,12 @@ struct SidebarView: View {
 struct MeetingsListView: View {
     let meetings: [SavedMeeting]
     var onSelect: (SavedMeeting) -> Void
+    var onDelete: (SavedMeeting) -> Void = { _ in }
+    var onRename: (SavedMeeting, String) -> Void = { _, _ in }
+
+    @State private var meetingToDelete: SavedMeeting?
+    @State private var meetingToRename: SavedMeeting?
+    @State private var renameText = ""
 
     var body: some View {
         List(meetings) { meeting in
@@ -212,8 +225,56 @@ struct MeetingsListView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .contextMenu {
+                Button {
+                    renameText = meeting.displayName
+                    meetingToRename = meeting
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+                Divider()
+                Button(role: .destructive) {
+                    meetingToDelete = meeting
+                } label: {
+                    Label("Delete Meeting", systemImage: "trash")
+                }
+            }
         }
         .listStyle(.sidebar)
+        .alert("Rename Meeting", isPresented: .init(
+            get: { meetingToRename != nil },
+            set: { if !$0 { meetingToRename = nil } }
+        )) {
+            TextField("Meeting name", text: $renameText)
+            Button("Cancel", role: .cancel) { meetingToRename = nil }
+            Button("Rename") {
+                if let meeting = meetingToRename {
+                    let name = renameText.trimmingCharacters(in: .whitespaces)
+                    if !name.isEmpty {
+                        onRename(meeting, name)
+                    }
+                    meetingToRename = nil
+                }
+            }
+        } message: {
+            Text("Enter a new name for this meeting.")
+        }
+        .alert("Delete Meeting?", isPresented: .init(
+            get: { meetingToDelete != nil },
+            set: { if !$0 { meetingToDelete = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { meetingToDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let meeting = meetingToDelete {
+                    onDelete(meeting)
+                    meetingToDelete = nil
+                }
+            }
+        } message: {
+            if let meeting = meetingToDelete {
+                Text("Are you sure you want to delete \"\(meeting.displayName)\"? This cannot be undone.")
+            }
+        }
     }
 }
 

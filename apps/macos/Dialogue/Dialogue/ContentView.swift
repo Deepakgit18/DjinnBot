@@ -47,6 +47,23 @@ struct ContentView: View {
                         },
                         onSelectMeeting: { meeting in
                             appState.openMeeting(meeting)
+                        },
+                        onDeleteMeeting: { meeting in
+                            // Navigate away if viewing the deleted meeting
+                            if case .meetingDetail(let current) = appState.activeScreen,
+                               current == meeting {
+                                appState.navigateHome()
+                            }
+                            MeetingStore.shared.deleteMeeting(meeting)
+                        },
+                        onRenameMeeting: { meeting, newName in
+                            if let renamed = MeetingStore.shared.renameMeeting(meeting, to: newName) {
+                                // If viewing the renamed meeting, update navigation to the new instance
+                                if case .meetingDetail(let current) = appState.activeScreen,
+                                   current == meeting {
+                                    appState.openMeeting(renamed)
+                                }
+                            }
                         }
                     )
                 } detail: {
@@ -70,8 +87,15 @@ struct ContentView: View {
                     }
                 }
 
-                // App-wide status footer (model download progress, etc.)
-                StatusFooterView()
+                // App-wide status footer (model download progress, recording prep, refinement)
+                if #available(macOS 26.0, *), let recorder = recorderHolder.recorder {
+                    StatusFooterView(
+                        preparationStatus: recorder.preparationStatus,
+                        isStarting: recorder.isStarting
+                    )
+                } else {
+                    StatusFooterView()
+                }
             }
             
             // Phase 3: Mouse tracking layer (invisible, covers the whole window)

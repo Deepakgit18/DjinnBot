@@ -101,6 +101,46 @@ final class MeetingStore: ObservableObject {
         startWatching()
     }
 
+    // MARK: - Delete a Meeting
+
+    /// Delete a saved meeting by removing its entire folder from disk.
+    func deleteMeeting(_ meeting: SavedMeeting) {
+        do {
+            try fileManager.removeItem(at: meeting.folderURL)
+            logger.info("Deleted meeting: \(meeting.displayName)")
+            refresh()
+        } catch {
+            logger.error("Failed to delete meeting \(meeting.displayName): \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Rename a Meeting
+
+    /// Rename a saved meeting by moving its folder to a new name.
+    /// Returns the updated `SavedMeeting`, or nil on failure.
+    @discardableResult
+    func renameMeeting(_ meeting: SavedMeeting, to newName: String) -> SavedMeeting? {
+        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Sanitize and ensure uniqueness
+        let safe = trimmed.components(separatedBy: CharacterSet.alphanumerics.union(.whitespaces).union(CharacterSet(charactersIn: "-_")).inverted).joined()
+        guard !safe.isEmpty else { return nil }
+
+        let targetName = uniqueFolderName(safe, excluding: meeting.folderURL)
+        let targetURL = rootFolder.appendingPathComponent(targetName, isDirectory: true)
+
+        do {
+            try fileManager.moveItem(at: meeting.folderURL, to: targetURL)
+            logger.info("Renamed meeting: \(meeting.displayName) → \(targetName)")
+            refresh()
+            return meetings.first { $0.folderURL == targetURL }
+        } catch {
+            logger.error("Failed to rename meeting: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
     // MARK: - Save a Meeting
 
     /// Save a completed meeting recording and transcript to disk.
@@ -410,9 +450,18 @@ final class MeetingStore: ObservableObject {
     }
 
     private func uniqueFolderName(_ base: String) -> String {
+        uniqueFolderName(base, excluding: nil)
+    }
+
+    private func uniqueFolderName(_ base: String, excluding: URL?) -> String {
         var name = base
         var counter = 1
-        while fileManager.fileExists(atPath: rootFolder.appendingPathComponent(name).path) {
+        let excludePath = excluding?.path
+        while true {
+            let candidate = rootFolder.appendingPathComponent(name).path
+            if !fileManager.fileExists(atPath: candidate) || candidate == excludePath {
+                break
+            }
             name = "\(base) \(counter)"
             counter += 1
         }
