@@ -277,7 +277,7 @@ struct MeetingsListView: View {
             }
         } message: {
             if let meeting = meetingToDelete {
-                Text("Are you sure you want to delete \"\(meeting.displayName)\"? This cannot be undone.")
+                Text("Are you sure you want to delete \"\(meeting.displayName)\"? This action is permanent and cannot be undone. The meeting recording and transcript will be deleted forever.")
             }
         }
     }
@@ -711,7 +711,29 @@ extension FileTreeViewController: NSMenuDelegate {
 
     @objc private func contextDelete(_ sender: Any) {
         guard let item = clickedItem else { return }
-        onDeleteItem?(item.url)
+
+        let alert = NSAlert()
+        alert.messageText = item.isFolder ? "Delete Folder?" : "Delete Note?"
+        alert.informativeText = "Are you sure you want to delete \"\(item.name)\"? This action is permanent and cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        // Style the Delete button as destructive
+        alert.buttons.first?.hasDestructiveAction = true
+
+        guard let window = outlineView.window else {
+            // Fallback: run modal if no window
+            if alert.runModal() == .alertFirstButtonReturn {
+                onDeleteItem?(item.url)
+            }
+            return
+        }
+
+        alert.beginSheetModal(for: window) { [weak self] response in
+            if response == .alertFirstButtonReturn {
+                self?.onDeleteItem?(item.url)
+            }
+        }
     }
 
     // MARK: - Export / Copy Actions

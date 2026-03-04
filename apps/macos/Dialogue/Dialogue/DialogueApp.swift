@@ -22,6 +22,7 @@ struct DialogueApp: App {
                         ModelPreloader.shared.preload()
                         _ = VoiceCommandManager.shared
                     }
+                    AppUpdater.shared.startPeriodicChecks()
                 }
         }
 
@@ -61,6 +62,18 @@ struct DialogueApp: App {
         .menuBarExtraAccess(isPresented: $isMenuPresented)
         .menuBarExtraStyle(.menu)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates...") {
+                    Task { await AppUpdater.shared.checkForUpdates() }
+                    // Also open Settings so the user can see results.
+                    if #available(macOS 14.0, *) {
+                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    } else {
+                        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+                    }
+                }
+            }
+
             CommandGroup(replacing: .newItem) {
                 Button("New Document") {
                     appState.createAndOpenNewDocument()

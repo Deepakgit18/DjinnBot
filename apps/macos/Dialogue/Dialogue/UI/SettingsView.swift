@@ -31,6 +31,7 @@ struct SettingsView: View {
     @State private var showEnrollSheet = false
 
     @ObservedObject private var preloader = ModelPreloader.shared
+    @ObservedObject private var updater = AppUpdater.shared
     @Environment(\.dismiss) private var dismiss
 
     /// The top-level Dialogue folder (parent of Notes and Meetings).
@@ -46,6 +47,32 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            // MARK: - Software Update
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Software Update")
+                        .font(.headline)
+
+                    HStack(spacing: 4) {
+                        Text("Current version: \(updater.currentAppVersion())")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if updater.isDevBuild {
+                            Text("(dev build)")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+
+                updateStatusView
+
+                HStack {
+                    Spacer()
+                    updateActionButtons
+                }
+            }
+
             Section {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("AI Configuration")
@@ -356,7 +383,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 546, height: 900)
+        .frame(width: 546, height: 1000)
         .onAppear {
             loadExistingKey()
             loadVoices()
@@ -370,6 +397,131 @@ struct SettingsView: View {
                 Text("Voice enrollment requires macOS 26.0 or later.")
                     .padding()
             }
+        }
+    }
+
+    // MARK: - Update Views
+
+    @ViewBuilder
+    private var updateStatusView: some View {
+        switch updater.state {
+        case .idle:
+            EmptyView()
+
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Checking for updates...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+        case .available(let version, let notes, _):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .foregroundStyle(.blue)
+                    Text("Version \(version) is available")
+                        .fontWeight(.medium)
+                }
+
+                if !notes.isEmpty && !notes.starts(with: "**Full Changelog**") {
+                    Text(notes)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(4)
+                }
+            }
+
+        case .downloading(let progress):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                    Text("\(Int(progress * 100))%")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                Text("Downloading update...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+        case .readyToInstall:
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text("Download complete. Ready to install.")
+                    .font(.caption)
+            }
+
+        case .installing:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Installing update...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+        case .failed(let message):
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+        case .upToDate:
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text("You're up to date.")
+                    .font(.caption)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var updateActionButtons: some View {
+        switch updater.state {
+        case .idle, .upToDate, .failed:
+            Button("Check for Updates") {
+                Task { await updater.checkForUpdates() }
+            }
+            .buttonStyle(.bordered)
+
+        case .checking:
+            EmptyView()
+
+        case .available:
+            HStack(spacing: 8) {
+                Button("Later") {
+                    updater.dismissUpdate()
+                }
+                .buttonStyle(.bordered)
+
+                Button("Download Update") {
+                    Task { await updater.downloadUpdate() }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+        case .downloading:
+            Button("Cancel") {
+                updater.cancelDownload()
+            }
+            .buttonStyle(.bordered)
+
+        case .readyToInstall:
+            Button("Install and Relaunch") {
+                Task { await updater.installUpdate() }
+            }
+            .buttonStyle(.borderedProminent)
+
+        case .installing:
+            EmptyView()
         }
     }
 

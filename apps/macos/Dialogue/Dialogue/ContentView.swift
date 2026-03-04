@@ -44,6 +44,9 @@ struct ContentView: View {
     /// In-document find state (Cmd+F when a note or transcript is open).
     @ObservedObject private var inDocSearch = InDocumentSearch.shared
 
+    /// App updater for showing update-available banner.
+    @ObservedObject private var updater = AppUpdater.shared
+
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
@@ -214,6 +217,12 @@ struct ContentView: View {
     @ViewBuilder
     private var detailContent: some View {
         VStack(spacing: 0) {
+            // Update available banner
+            if updater.hasUpdate, let version = updater.availableVersion {
+                UpdateAvailableBanner(version: version)
+                Divider()
+            }
+
             // Back to search banner — shown when navigating from a search result
             if appState.lastSearchQuery != nil && !appState.activeScreen.isSearchResults {
                 if let q = appState.lastSearchQuery {
@@ -391,6 +400,50 @@ final class RecorderHolder: ObservableObject {
             _recorder = nil
             cancellable = nil
         }
+    }
+}
+
+// MARK: - Update Available Banner
+
+/// Thin banner shown when a new version is available. Clicking opens Settings.
+struct UpdateAvailableBanner: View {
+    let version: String
+    @ObservedObject private var updater = AppUpdater.shared
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.down.circle.fill")
+                .foregroundStyle(.white)
+                .font(.caption)
+            Text("Version \(version) is available")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundStyle(.white)
+
+            Spacer()
+
+            Button("Update Now") {
+                Task { await updater.downloadUpdate() }
+            }
+            .font(.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 3)
+            .background(.white.opacity(0.2), in: RoundedRectangle(cornerRadius: 4))
+
+            Button {
+                updater.dismissUpdate()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.blue.gradient)
     }
 }
 

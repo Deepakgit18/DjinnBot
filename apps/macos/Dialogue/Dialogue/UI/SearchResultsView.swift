@@ -159,6 +159,14 @@ struct SearchResultsView: View {
     var onSelectNote: (URL) -> Void
     var onSelectTranscript: (SavedMeeting, UUID) -> Void
 
+    /// The individual words from the query, used for highlighting matches in results.
+    private var queryTerms: [String] {
+        query.lowercased()
+            .split(separator: " ")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -221,7 +229,7 @@ struct SearchResultsView: View {
                 if !noteResults.isEmpty {
                     sectionHeader("Notes", count: noteResults.count, icon: "doc.text")
                     ForEach(noteResults) { result in
-                        NoteResultRow(result: result) {
+                        NoteResultRow(result: result, queryTerms: queryTerms) {
                             if case .note(let url) = result.kind {
                                 onSelectNote(url)
                             }
@@ -235,7 +243,7 @@ struct SearchResultsView: View {
                     }
                     sectionHeader("Meeting Transcripts", count: transcriptResults.count, icon: "text.bubble")
                     ForEach(transcriptResults) { result in
-                        TranscriptResultRow(result: result) {
+                        TranscriptResultRow(result: result, queryTerms: queryTerms) {
                             if case .transcript(let meeting, let entryID) = result.kind {
                                 onSelectTranscript(meeting, entryID)
                             }
@@ -269,6 +277,7 @@ struct SearchResultsView: View {
 
 private struct NoteResultRow: View {
     let result: SearchResult
+    let queryTerms: [String]
     let action: () -> Void
 
     var body: some View {
@@ -285,15 +294,13 @@ private struct NoteResultRow: View {
                 .frame(width: 28, height: 28)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(result.title)
+                    highlightedText(result.title, terms: queryTerms)
                         .font(.subheadline.weight(.medium))
                         .lineLimit(1)
-                        .foregroundStyle(.primary)
 
                     if !result.snippet.isEmpty {
-                        Text(result.snippet)
+                        highlightedText(result.snippet, terms: queryTerms)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
 
@@ -329,6 +336,7 @@ private struct NoteResultRow: View {
 
 private struct TranscriptResultRow: View {
     let result: SearchResult
+    let queryTerms: [String]
     let action: () -> Void
 
     var body: some View {
@@ -345,15 +353,13 @@ private struct TranscriptResultRow: View {
                 .frame(width: 28, height: 28)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(result.title)
+                    highlightedText(result.title, terms: queryTerms)
                         .font(.subheadline.weight(.medium))
                         .lineLimit(1)
-                        .foregroundStyle(.primary)
 
                     if !result.snippet.isEmpty {
-                        Text(result.snippet)
+                        highlightedText(result.snippet, terms: queryTerms)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
 
@@ -406,6 +412,38 @@ private func scoreIndicator(_ score: Double) -> some View {
     }
     .frame(width: 20)
     .help(String(format: "Match: %.0f%%", score * 100))
+}
+
+// MARK: - Highlighted Text Helper
+
+/// Builds a `Text` view where all occurrences of the query terms are highlighted
+/// with a yellow/orange background and bold weight using `AttributedString`.
+///
+/// Performs case-insensitive matching of each query term independently.
+private func highlightedText(_ text: String, terms: [String]) -> Text {
+    guard !terms.isEmpty, !text.isEmpty else {
+        return Text(text)
+    }
+
+    var attributed = AttributedString(text)
+
+    for term in terms {
+        guard !term.isEmpty else { continue }
+        // Find all case-insensitive occurrences of this term
+        var searchRange = attributed.startIndex..<attributed.endIndex
+        while let found = attributed[searchRange].range(of: term, options: .caseInsensitive) {
+            attributed[found].backgroundColor = .yellow.opacity(0.35)
+            attributed[found].inlinePresentationIntent = .stronglyEmphasized
+            // Advance past this match
+            if found.upperBound < attributed.endIndex {
+                searchRange = found.upperBound..<attributed.endIndex
+            } else {
+                break
+            }
+        }
+    }
+
+    return Text(attributed)
 }
 
 // MARK: - Back to Search Banner

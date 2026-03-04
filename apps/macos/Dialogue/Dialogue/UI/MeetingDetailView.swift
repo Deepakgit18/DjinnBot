@@ -54,8 +54,17 @@ struct MeetingDetailView: View {
     /// Full-document editing sheet.
     @State private var showDocumentEdit = false
 
+    /// Reassign-all confirmation state.
+    @State private var showReassignAllConfirm = false
+    @State private var pendingReassignOld: String = ""
+    @State private var pendingReassignNew: String = ""
+
     /// In-document find (Cmd+F).
     @ObservedObject private var inDocSearch = InDocumentSearch.shared
+
+    /// Undo/redo bridge for transcript operations (Cmd+Z / Cmd+Shift+Z).
+    @Environment(\.undoManager) private var undoManager
+    @StateObject private var undoHelper = TranscriptUndoHelper()
 
     var body: some View {
         ZStack {
@@ -104,7 +113,10 @@ struct MeetingDetailView: View {
         }
         .frame(minWidth: 500, minHeight: 400)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { loadTranscript() }
+        .onAppear {
+            loadTranscript()
+            undoHelper.liveEntries = entries
+        }
         .onDisappear {
             player.stop()
             // Dismiss in-doc search when leaving this view
@@ -115,10 +127,26 @@ struct MeetingDetailView: View {
                 loadTranscript()
             }
         }
+        // Undo/redo restore: when the helper signals a restore, apply it.
+        .onChange(of: undoHelper.restoreGeneration) { _, _ in
+            guard let restored = undoHelper.pendingRestore else { return }
+            undoHelper.pendingRestore = nil
+            entries = restored
+            MeetingStore.shared.saveTranscriptEntries(for: meeting, entries: entries)
+            showToast(undoManager?.isUndoing == true ? "Undone" : "Redone")
+        }
         .alert("Error", isPresented: $showError) {
             Button("OK") {}
         } message: {
             Text(errorMessage)
+        }
+        .alert("Reassign All Segments?", isPresented: $showReassignAllConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reassign All", role: .destructive) {
+                reassignAllEntries(from: pendingReassignOld, to: pendingReassignNew)
+            }
+        } message: {
+            Text("This will reassign every \"\(pendingReassignOld)\" segment to \"\(pendingReassignNew)\". This affects the entire transcript.")
         }
         .sheet(isPresented: $showEnrollSheet) {
             enrollmentSheet
@@ -132,8 +160,10 @@ struct MeetingDetailView: View {
             TranscriptDocumentEditView(
                 originalEntries: entries,
                 onSave: { newEntries in
+                    recordUndoSnapshot(actionName: "Edit Transcript")
                     entries = newEntries
                     collapseAdjacentEntries()
+                    syncUndoLiveEntries()
                     MeetingStore.shared.saveTranscriptEntries(for: meeting, entries: entries)
                     showToast("Transcript updated")
                 }
@@ -274,7 +304,9 @@ struct MeetingDetailView: View {
                                 reassignEntry(at: index, to: userID)
                             },
                             onReassignAll: { e, userID in
-                                reassignAllEntries(from: e.speaker, to: userID)
+                                pendingReassignOld = e.speaker
+                                pendingReassignNew = userID
+                                showReassignAllConfirm = true
                             },
                             onEnhance: { e, userID in
                                 Task { await enhanceVoice(entry: e, userID: userID) }
@@ -487,6 +519,7 @@ struct MeetingDetailView: View {
     private func loadTranscript() {
         guard meeting.hasTranscript else {
             entries = []
+            undoHelper.liveEntries = entries
             return
         }
         if let loaded = MeetingStore.shared.loadTranscript(for: meeting) {
@@ -494,6 +527,7 @@ struct MeetingDetailView: View {
         } else {
             loadError = "Could not read transcript.json"
         }
+        undoHelper.liveEntries = entries
     }
 
     // MARK: - Collapse Adjacent Same-Speaker Entries
@@ -514,8 +548,10 @@ struct MeetingDetailView: View {
                curr.stream == prev.stream &&
                curr.speaker != "Speaker-?" &&
                (curr.start - prev.end) < 3.0 {
-                // Merge into prev
+                // Merge into prev — preserve the first entry's UUID so SwiftUI
+                // can update the existing view in-place instead of recreating it.
                 collapsed[collapsed.count - 1] = TranscriptEntry(
+                    id: prev.id,
                     speaker: prev.speaker,
                     start: prev.start,
                     end: curr.end,
@@ -533,12 +569,32 @@ struct MeetingDetailView: View {
         }
     }
 
+    // MARK: - Undo / Redo
+
+    /// Snapshot the current entries, then register an undo action.
+    /// Call this BEFORE mutating `entries`. The mutation methods then
+    /// mutate entries, collapse, save, and show a toast as usual.
+    /// The undo helper captures the pre-mutation snapshot and registers
+    /// with NSUndoManager so Cmd+Z / Cmd+Shift+Z work via the Edit menu.
+    private func recordUndoSnapshot(actionName: String) {
+        undoHelper.undoManager = undoManager
+        undoHelper.liveEntries = entries
+        undoHelper.recordSnapshot(entries, actionName: actionName)
+    }
+
+    /// Sync the undo helper's live entries after a mutation completes.
+    private func syncUndoLiveEntries() {
+        undoHelper.liveEntries = entries
+    }
+
     // MARK: - Reassign Speaker
 
     private func reassignEntry(at index: Int, to newSpeaker: String) {
         guard index >= 0 && index < entries.count else { return }
+        recordUndoSnapshot(actionName: "Reassign Segment")
         let old = entries[index]
         entries[index] = TranscriptEntry(
+            id: old.id,  // Preserve UUID — avoids destroying/recreating the NSTextView
             speaker: newSpeaker,
             start: old.start,
             end: old.end,
@@ -547,6 +603,7 @@ struct MeetingDetailView: View {
             isFinal: old.isFinal
         )
         collapseAdjacentEntries()
+        syncUndoLiveEntries()
         MeetingStore.shared.saveTranscriptEntries(for: meeting, entries: entries)
         showToast("Reassigned to \(newSpeaker)")
     }
@@ -554,7 +611,9 @@ struct MeetingDetailView: View {
     // MARK: - Reassign All Segments of a Speaker
 
     private func reassignAllEntries(from oldSpeaker: String, to newSpeaker: String) {
+        recordUndoSnapshot(actionName: "Reassign All \(oldSpeaker)")
         reassignMatchingSpeaker(oldSpeaker: oldSpeaker, newSpeaker: newSpeaker)
+        syncUndoLiveEntries()
         showToast("Reassigned all \(oldSpeaker) to \(newSpeaker)")
     }
 
@@ -565,8 +624,10 @@ struct MeetingDetailView: View {
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        recordUndoSnapshot(actionName: "Edit Text")
         let old = entries[idx]
         entries[idx] = TranscriptEntry(
+            id: old.id,  // Preserve UUID
             speaker: old.speaker,
             start: old.start,
             end: old.end,
@@ -574,6 +635,7 @@ struct MeetingDetailView: View {
             stream: old.stream,
             isFinal: old.isFinal
         )
+        syncUndoLiveEntries()
         MeetingStore.shared.saveTranscriptEntries(for: meeting, entries: entries)
         showToast("Text updated")
     }
@@ -588,6 +650,8 @@ struct MeetingDetailView: View {
         guard range.location != NSNotFound,
               range.length > 0,
               range.location + range.length <= nsText.length else { return }
+
+        recordUndoSnapshot(actionName: "Split & Reassign")
 
         let beforeText = nsText.substring(to: range.location).trimmingCharacters(in: .whitespaces)
         let selectedText = nsText.substring(with: range).trimmingCharacters(in: .whitespaces)
@@ -638,6 +702,7 @@ struct MeetingDetailView: View {
 
         entries.replaceSubrange(idx...idx, with: newEntries)
         collapseAdjacentEntries()
+        syncUndoLiveEntries()
         MeetingStore.shared.saveTranscriptEntries(for: meeting, entries: entries)
         showToast("Split and reassigned to \(newSpeaker)")
     }
@@ -661,7 +726,9 @@ struct MeetingDetailView: View {
             let userID = trimmed.lowercased().replacingOccurrences(of: " ", with: "_")
             try await VoiceID.shared.enroll(userID: userID, audioClips: [clip], colorIndex: colorIndex)
 
+            recordUndoSnapshot(actionName: "Enroll & Reassign")
             reassignMatchingSpeaker(oldSpeaker: entry.speaker, newSpeaker: userID)
+            syncUndoLiveEntries()
 
             isProcessing = false
             showToast("Enrolled \(trimmed)")
@@ -704,6 +771,7 @@ struct MeetingDetailView: View {
             if entries[i].speaker == oldSpeaker {
                 let old = entries[i]
                 entries[i] = TranscriptEntry(
+                    id: old.id,  // Preserve UUID — avoids destroying/recreating views
                     speaker: newSpeaker,
                     start: old.start,
                     end: old.end,
@@ -889,6 +957,9 @@ private class SegmentNSTextView: NSTextView {
     var buildContextMenu: ((NSRange?) -> NSMenu)?
     var heightDidChange: ((CGFloat) -> Void)?
 
+    /// Tracks the last width used for height calculation to avoid redundant layout.
+    private var lastLayoutWidth: CGFloat = -1
+
     override func menu(for event: NSEvent) -> NSMenu? {
         let range = selectedRange()
         return buildContextMenu?(range.length > 0 ? range : nil) ?? super.menu(for: event)
@@ -897,11 +968,23 @@ private class SegmentNSTextView: NSTextView {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         textContainer?.containerSize = NSSize(width: newSize.width, height: .greatestFiniteMagnitude)
-        recalculateHeight()
+        // Only recalculate height if the width actually changed — avoids a
+        // feedback loop where height change → frame change → recalculate → height change.
+        if abs(newSize.width - lastLayoutWidth) > 0.5 {
+            lastLayoutWidth = newSize.width
+            recalculateHeight()
+        }
     }
 
     override func didChangeText() {
         super.didChangeText()
+        lastLayoutWidth = -1 // force recalculation on text change
+        recalculateHeight()
+    }
+
+    /// Force a height recalculation (called after programmatic text assignment).
+    func forceRecalculateHeight() {
+        lastLayoutWidth = textContainer?.containerSize.width ?? -1
         recalculateHeight()
     }
 
@@ -974,15 +1057,12 @@ private struct SegmentTextView: NSViewRepresentable {
 
         if tv.string != text {
             tv.string = text
+            // Reset height counter since content changed — allow fresh convergence.
+            context.coordinator.resetHeightCounter()
             // Programmatic string assignment doesn't trigger didChangeText(),
             // so the height callback never fires. Force a layout + recalc.
             tv.invalidateIntrinsicContentSize()
-            if let container = tv.textContainer, let lm = tv.layoutManager {
-                lm.ensureLayout(for: container)
-                let usedRect = lm.usedRect(for: container)
-                let newHeight = max(ceil(usedRect.height), 16)
-                context.coordinator.updateHeight(newHeight)
-            }
+            tv.forceRecalculateHeight()
         }
     }
 
@@ -994,6 +1074,10 @@ private struct SegmentTextView: NSViewRepresentable {
 
     class Coordinator: NSObject {
         var parent: SegmentTextView
+
+        /// Prevents runaway height update cycles. Reset when text changes.
+        private var heightUpdateCount = 0
+        private static let maxHeightUpdates = 3
 
         init(parent: SegmentTextView) {
             self.parent = parent
@@ -1017,8 +1101,18 @@ private struct SegmentTextView: NSViewRepresentable {
             }
         }
 
+        /// Reset the height update counter (called when text changes).
+        func resetHeightCounter() {
+            heightUpdateCount = 0
+        }
+
         func updateHeight(_ newHeight: CGFloat) {
-            guard abs(newHeight - parent.height) > 0.5 else { return }
+            // Require meaningful height change (>1px) to avoid sub-pixel oscillation.
+            guard abs(newHeight - parent.height) > 1.0 else { return }
+            // Cap the number of height update cycles to prevent infinite loops
+            // caused by layout oscillation (e.g. scrollbar show/hide changing width).
+            guard heightUpdateCount < Coordinator.maxHeightUpdates else { return }
+            heightUpdateCount += 1
             DispatchQueue.main.async {
                 self.parent.height = newHeight
             }
@@ -1357,5 +1451,60 @@ private struct MeetingTranscriptRow: View {
         let minutes = Int(time) / 60
         let seconds = Int(time) % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+// MARK: - Transcript Undo Helper
+
+/// Bridge between SwiftUI's `@State` and NSUndoManager for transcript operations.
+///
+/// NSUndoManager requires a reference-type target for `registerUndo(withTarget:)`.
+/// This class acts as that target. When an undo/redo fires, it sets `pendingRestore`
+/// and bumps `restoreGeneration` so the view's `.onChange` handler can apply the
+/// restored entries back to `@State`.
+///
+/// The standard NSUndoManager pattern — where the undo handler calls the same method
+/// that registers its own inverse — is used here so that multi-level undo/redo chains
+/// work correctly. Cmd+Z and Cmd+Shift+Z work automatically via the Edit menu.
+@MainActor
+final class TranscriptUndoHelper: ObservableObject {
+    /// Bumped each time an undo/redo restore is triggered. The view observes this.
+    @Published var restoreGeneration = 0
+
+    /// The entries to restore. Set before bumping `restoreGeneration`.
+    var pendingRestore: [TranscriptEntry]?
+
+    /// The live entries from the view. Kept in sync so undo/redo can capture
+    /// the current state when registering the inverse action.
+    var liveEntries: [TranscriptEntry] = []
+
+    /// The undo manager from the view's environment. Set before each recording.
+    weak var undoManager: UndoManager?
+
+    /// Snapshot the current entries before a mutation. Registers an undo action
+    /// that will restore these entries when Cmd+Z is pressed.
+    func recordSnapshot(_ currentEntries: [TranscriptEntry], actionName: String) {
+        let snapshot = currentEntries
+        undoManager?.registerUndo(withTarget: self) { target in
+            target.restore(snapshot, actionName: actionName)
+        }
+        undoManager?.setActionName(actionName)
+    }
+
+    /// Restore a set of entries (called by undo/redo). Triggers the view to
+    /// apply the entries, and registers the inverse undo action so redo works.
+    private func restore(_ entries: [TranscriptEntry], actionName: String) {
+        // Capture the state we're about to overwrite (the view's current entries)
+        // so the inverse action (redo/undo) can get back to it.
+        let current = liveEntries
+        // Signal the view to apply the restored entries.
+        pendingRestore = entries
+        liveEntries = entries
+        restoreGeneration += 1
+        // Register the inverse action (redo if undoing, undo if redoing).
+        undoManager?.registerUndo(withTarget: self) { target in
+            target.restore(current, actionName: actionName)
+        }
+        undoManager?.setActionName(actionName)
     }
 }
