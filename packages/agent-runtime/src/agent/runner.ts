@@ -241,6 +241,9 @@ export class ContainerAgentRunner {
   private lastActivityAt = Date.now();
   /** Handle for the repeating inactivity check interval. */
   private inactivityIntervalId: ReturnType<typeof setInterval> | null = null;
+  /** Set to true when the hard wall-clock cap fires, so we can report it
+   *  as a timeout failure rather than a successful completion. */
+  private hardTimeoutFired = false;
 
   // ── LLM call logging ──────────────────────────────────────────────────
   private turnStartTime = 0;
@@ -1584,6 +1587,7 @@ export class ContainerAgentRunner {
           : process.env.ONBOARDING_SESSION_ID ? 1_800_000 : 900_000;
 
       this.lastActivityAt = Date.now();
+      this.hardTimeoutFired = false;
       const stepStartTime = Date.now();
 
       // Check for inactivity every 10 seconds
@@ -1593,7 +1597,8 @@ export class ContainerAgentRunner {
         const elapsed = now - stepStartTime;
 
         if (elapsed >= hardCapMs) {
-          console.warn(`[AgentRunner] Hard wall-clock cap reached (${Math.round(elapsed / 1000)}s), aborting`);
+          console.warn(`[AgentRunner] Hard wall-clock cap reached (${Math.round(elapsed / 1000)}s of ${Math.round(hardCapMs / 1000)}s), aborting`);
+          this.hardTimeoutFired = true;
           agent.abort();
           return;
         }
@@ -1660,13 +1665,26 @@ export class ContainerAgentRunner {
         return { ...this.stepResult, explicitCompletion: true };
       }
 
-      // Agent didn't call complete/fail — return raw output (chat-style)
+      // Agent didn't call complete/fail — check if we were killed by hard timeout
       // Flush memory retrieval tracking for analytics (no outcome — scoring is agent-driven)
       this.retrievalTracker.flush().catch(() => {});
       // Check if auto-compaction is needed (fire-and-forget)
       this.checkAutoCompaction().catch(err =>
         console.error('[AgentRunner] Auto-compaction check failed:', err)
       );
+
+      if (this.hardTimeoutFired) {
+        const elapsed = Math.round((Date.now() - stepStartTime) / 1000);
+        const msg = `Hard wall-clock timeout after ${elapsed}s (limit: ${Math.round(hardCapMs / 1000)}s). Agent was still working — increase the pipeline timeout or chatHardTimeoutSec setting.`;
+        console.error(`[AgentRunner] ${msg}`);
+        return {
+          output: this.rawOutput,
+          error: msg,
+          success: false,
+          explicitCompletion: false,
+        };
+      }
+
       if (this.autoContinuations > 0) {
         console.log(`[AgentRunner] Step finished (no explicit completion) after ${this.autoContinuations} auto-continuation(s), ${this.runToolCallCount} total tool call(s)`);
       }

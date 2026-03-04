@@ -64,7 +64,7 @@
     "sigma": "^3.0.0",
     "sonner": "^2.0.7",
     "tailwind-merge": "^2.6.0",
-    "three": "^0.170.0",
+    "three": "^0.175.0",
     "zod": "^3.23.8"
   },
   "browserslist": [
@@ -79,7 +79,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "@types/three": "^0.170.0",
+    "@types/three": "^0.175.0",
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.4.0",
     "postcss": "^8.4.0",

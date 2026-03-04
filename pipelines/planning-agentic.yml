@@ -20,7 +20,7 @@ description: Single-agent planning with tool-based task creation and dependency 
 
 defaults:
   model: openrouter/anthropic/claude-opus-4-6
-  timeout: 2400
+  timeout: 3600
   maxTurns: 300
 
 agents:

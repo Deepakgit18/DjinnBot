@@ -28,10 +28,15 @@ router = APIRouter()
 # ── Constants ────────────────────────────────────────────────────────────────
 
 GITHUB_REPO = "BaseDatum/DjinnBot"
-GITHUB_RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 CHECK_INTERVAL_SECONDS = 3600  # 1 hour
 REDIS_CACHE_KEY = "djinnbot:system:update_check"
 REDIS_CACHE_TTL = 3600  # 1 hour
+
+# Only tags matching pure semver (vX.Y.Z) are whole-project releases.
+# Tags with prefixes like "app-v1.0.0" or "cli-v2.0.0" are interface/tool
+# releases and must be ignored when checking for system updates.
+_PURE_SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -50,8 +55,14 @@ def _get_current_version() -> str:
 
 
 def _parse_semver(tag: str) -> Optional[tuple[int, int, int]]:
-    """Parse a semver tag like 'v1.2.3' into (1, 2, 3). Returns None on failure."""
-    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", tag)
+    """Parse a *pure* semver tag like 'v1.2.3' into (1, 2, 3).
+
+    Only matches tags of the form ``vX.Y.Z`` (or ``X.Y.Z``).  Prefixed tags
+    such as ``app-v1.0.0`` or ``cli-v2.0.0`` are intentionally rejected
+    because they represent individual interface/tool releases, not whole-
+    project releases.
+    """
+    m = _PURE_SEMVER_RE.match(tag)
     if not m:
         return None
     return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
@@ -68,7 +79,13 @@ def _is_newer(latest_tag: str, current_tag: str) -> bool:
 
 
 async def _fetch_latest_release() -> Optional[dict]:
-    """Fetch the latest release from GitHub Releases API."""
+    """Fetch the latest *whole-project* release from GitHub.
+
+    Fetches the first page of releases and returns the newest one whose
+    tag is pure semver (``vX.Y.Z``).  Releases based on prefixed tags
+    (e.g. ``app-v1.0.0``, ``cli-v2.0.0``) are skipped because they are
+    interface/tool releases, not whole-project releases.
+    """
     try:
         headers = {
             "Accept": "application/vnd.github+json",
@@ -80,12 +97,31 @@ async def _fetch_latest_release() -> Optional[dict]:
             headers["Authorization"] = f"Bearer {gh_token}"
 
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(GITHUB_RELEASES_URL, headers=headers)
+            # Fetch the most recent releases (GitHub returns newest first).
+            # 30 per page is the default; that's plenty of runway to find
+            # the latest pure-semver release even if many prefixed releases
+            # have been published in between.
+            resp = await client.get(
+                GITHUB_RELEASES_URL,
+                headers=headers,
+                params={"per_page": 30},
+            )
             if resp.status_code == 404:
                 logger.debug("No releases found on GitHub")
                 return None
             resp.raise_for_status()
-            return resp.json()
+            releases = resp.json()
+
+        # Find the first (newest) release with a pure semver tag.
+        for release in releases:
+            if release.get("draft") or release.get("prerelease"):
+                continue
+            tag = release.get("tag_name", "")
+            if _PURE_SEMVER_RE.match(tag):
+                return release
+
+        logger.debug("No pure-semver release found among recent GitHub releases")
+        return None
     except httpx.HTTPStatusError as e:
         logger.warning(
             f"GitHub API error checking for updates: {e.response.status_code}"

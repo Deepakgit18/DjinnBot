@@ -395,7 +395,11 @@ export class ContainerRunner implements AgentRunner {
           STEP_TIMEOUT_MS: String(timeout),
           // Autonomous agent execution settings from admin panel
           CHAT_INACTIVITY_TIMEOUT_MS: String(globalFlags.chatInactivityTimeoutSec * 1000),
-          CHAT_HARD_TIMEOUT_MS: String(globalFlags.chatHardTimeoutSec * 1000),
+          // Hard wall-clock cap: use the GREATER of the pipeline step timeout
+          // and the chat hard timeout setting.  Pipeline steps (especially
+          // planning runs) can legitimately need longer than chatHardTimeoutSec;
+          // we must not cut them short.
+          CHAT_HARD_TIMEOUT_MS: String(Math.max(timeout, globalFlags.chatHardTimeoutSec * 1000)),
           MAX_AUTO_CONTINUATIONS: String(globalFlags.maxAutoContinuations),
           // LLM call logging context — used by the runtime to tag each API call
           RUN_ID: runId,

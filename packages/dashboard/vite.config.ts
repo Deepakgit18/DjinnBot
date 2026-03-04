@@ -12,9 +12,6 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
-    // Ensure all packages resolve to the same copy of three.js core,
-    // preventing the "Multiple instances of Three.js" warning without
-    // breaking subpath exports like 'three/webgpu'.
     dedupe: ['three'],
   },
   // VITE_API_URL is injected at build time via --mode or the environment.
