@@ -401,8 +401,13 @@ final class AppUpdater: ObservableObject {
         )
     }
 
-    /// Launches a detached shell script that performs the actual file swap
-    /// after this process exits.
+    /// Launches a fully detached shell script that performs the actual file
+    /// swap after this process exits.
+    ///
+    /// The script is written to a temp file and launched via `nohup ... &`
+    /// in a subshell so it survives the parent process exiting. A plain
+    /// `Process()` child gets killed when the parent terminates because
+    /// they share a process group.
     private func launchInstallerScript(
         stagedAppPath: String,
         targetAppPath: String,
@@ -410,11 +415,11 @@ final class AppUpdater: ObservableObject {
     ) {
         let pid = ProcessInfo.processInfo.processIdentifier
 
-        // The script runs in the background after we terminate.
-        // It polls until our PID is gone, then does the swap.
         let script = """
+            #!/bin/sh
             # Wait for the app to fully exit
-            while kill -0 \(pid) 2>/dev/null; do sleep 0.1; done
+            while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done
+            sleep 0.5
 
             # Remove the old app bundle
             rm -rf "\(targetAppPath)"
@@ -427,18 +432,38 @@ final class AppUpdater: ObservableObject {
 
             # Relaunch
             open "\(targetAppPath)"
+
+            # Self-cleanup
+            rm -f "$0"
             """
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", script]
-        // Detach: don't let our exit kill the child process
-        process.qualityOfService = .userInitiated
-        try? process.run()
+        // Write script to a temp file so it can outlive our process.
+        let scriptURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dialogue-update-\(UUID().uuidString.prefix(8)).sh")
+        do {
+            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: scriptURL.path
+            )
+        } catch {
+            print("[Dialogue] Failed to write update script: \(error)")
+            return
+        }
 
-        // Terminate the current app.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            NSApplication.shared.terminate(nil)
+        // Launch via a subshell with nohup + & so the script fully detaches
+        // from our process group and survives app termination.
+        let launcher = Process()
+        launcher.executableURL = URL(fileURLWithPath: "/bin/sh")
+        launcher.arguments = ["-c", "nohup '\(scriptURL.path)' >/dev/null 2>&1 &"]
+        launcher.qualityOfService = .userInitiated
+        try? launcher.run()
+
+        // Hard-exit the app. NSApplication.shared.terminate(nil) goes through
+        // SwiftUI's shutdown sequence which can silently cancel termination.
+        // For an update-and-relaunch flow we need a guaranteed exit.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            exit(0)
         }
     }
 
