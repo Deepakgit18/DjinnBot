@@ -40,6 +40,16 @@ final class AppUpdater: ObservableObject {
         return false
     }
 
+    /// Whether the update banner should be visible (any active update state).
+    var showsBanner: Bool {
+        switch state {
+        case .available, .downloading, .readyToInstall, .installing:
+            return true
+        default:
+            return false
+        }
+    }
+
     // MARK: - Configuration
 
     private let owner = "BaseDatum"
@@ -341,62 +351,95 @@ final class AppUpdater: ObservableObject {
 
     // MARK: - Install Helpers
 
+    /// Mounts the DMG, stages the new .app to a temp directory, then launches
+    /// a detached shell script that waits for this process to exit before
+    /// swapping the app bundle and relaunching. This avoids macOS's refusal
+    /// to replace a running .app.
     private func performInstall(dmgPath: URL) async throws {
         let fm = FileManager.default
 
         // 1. Mount the DMG.
         let mountPoint = try await mountDMG(at: dmgPath)
 
-        defer {
-            // Always try to unmount.
-            let unmount = Process()
-            unmount.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-            unmount.arguments = ["detach", mountPoint, "-quiet"]
-            try? unmount.run()
-            unmount.waitUntilExit()
-
-            // Clean up downloaded DMG.
-            try? fm.removeItem(at: dmgPath)
-        }
-
         // 2. Find the .app inside the mounted volume.
         let mountURL = URL(fileURLWithPath: mountPoint)
         let contents = try fm.contentsOfDirectory(at: mountURL, includingPropertiesForKeys: nil)
         guard let appBundle = contents.first(where: { $0.pathExtension == "app" }) else {
+            // Unmount before throwing.
+            unmountDMG(at: mountPoint)
             throw UpdateError.noAppInDMG
         }
 
-        // 3. Determine where the current app lives.
-        let currentAppPath = Bundle.main.bundlePath
-        let currentAppURL = URL(fileURLWithPath: currentAppPath)
-        let parentDir = currentAppURL.deletingLastPathComponent()
+        // 3. Stage: copy the new .app from the DMG to a temp directory.
+        //    We can't leave it on the mounted DMG because we need to unmount
+        //    before the shell script runs (after we exit).
+        let stagingDir = fm.temporaryDirectory
+            .appendingPathComponent("DialogueUpdate-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
 
-        // 4. Create a backup of the current app.
-        let backupURL = parentDir.appendingPathComponent(
-            "\(currentAppURL.lastPathComponent).backup-\(UUID().uuidString.prefix(8))"
-        )
+        let stagedApp = stagingDir.appendingPathComponent(appBundle.lastPathComponent)
+        try fm.copyItem(at: appBundle, to: stagedApp)
 
-        // Move current app to backup.
-        try fm.moveItem(at: currentAppURL, to: backupURL)
+        // 4. Unmount the DMG — we're done with it.
+        unmountDMG(at: mountPoint)
+        try? fm.removeItem(at: dmgPath)
 
-        do {
-            // 5. Copy new app into place.
-            try fm.copyItem(at: appBundle, to: currentAppURL)
-        } catch {
-            // Restore backup on failure.
-            try? fm.removeItem(at: currentAppURL)
-            try? fm.moveItem(at: backupURL, to: currentAppURL)
-            throw UpdateError.installCopyFailed(error.localizedDescription)
-        }
-
-        // 6. Remove backup.
-        try? fm.removeItem(at: backupURL)
-
-        // 7. Clear dismissed version.
+        // 5. Clear dismissed version before we quit.
         UserDefaults.standard.removeObject(forKey: dismissedVersionKey)
 
-        // 8. Relaunch.
-        relaunchApp(at: currentAppPath)
+        // 6. Launch a detached shell script that:
+        //    a) Waits for our PID to exit
+        //    b) Removes the old .app
+        //    c) Moves the staged .app into place
+        //    d) Opens the new app
+        //    e) Cleans up the staging directory
+        let currentAppPath = Bundle.main.bundlePath
+        launchInstallerScript(
+            stagedAppPath: stagedApp.path,
+            targetAppPath: currentAppPath,
+            stagingDirPath: stagingDir.path
+        )
+    }
+
+    /// Launches a detached shell script that performs the actual file swap
+    /// after this process exits.
+    private func launchInstallerScript(
+        stagedAppPath: String,
+        targetAppPath: String,
+        stagingDirPath: String
+    ) {
+        let pid = ProcessInfo.processInfo.processIdentifier
+
+        // The script runs in the background after we terminate.
+        // It polls until our PID is gone, then does the swap.
+        let script = """
+            # Wait for the app to fully exit
+            while kill -0 \(pid) 2>/dev/null; do sleep 0.1; done
+
+            # Remove the old app bundle
+            rm -rf "\(targetAppPath)"
+
+            # Move the staged app into place
+            mv "\(stagedAppPath)" "\(targetAppPath)"
+
+            # Clean up staging directory
+            rm -rf "\(stagingDirPath)"
+
+            # Relaunch
+            open "\(targetAppPath)"
+            """
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script]
+        // Detach: don't let our exit kill the child process
+        process.qualityOfService = .userInitiated
+        try? process.run()
+
+        // Terminate the current app.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            NSApplication.shared.terminate(nil)
+        }
     }
 
     /// Mounts a DMG and returns the mount point path.
@@ -425,7 +468,6 @@ final class AppUpdater: ObservableObject {
             throw UpdateError.dmgMountFailed
         }
 
-        // Find the entry with a mount-point.
         for entity in entities {
             if let mountPoint = entity["mount-point"] as? String {
                 return mountPoint
@@ -435,25 +477,14 @@ final class AppUpdater: ObservableObject {
         throw UpdateError.dmgMountFailed
     }
 
-    /// Relaunches the app at the given path after a brief delay (to let the
-    /// current process begin termination).
-    private func relaunchApp(at path: String) {
-        // Use a shell script that waits for our PID to exit, then opens the app.
-        let pid = ProcessInfo.processInfo.processIdentifier
-        let script = """
-            while kill -0 \(pid) 2>/dev/null; do sleep 0.1; done
-            open "\(path)"
-            """
-
+    /// Best-effort unmount. Non-throwing because we don't want unmount
+    /// failures to block the update flow.
+    private func unmountDMG(at mountPoint: String) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", script]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        process.arguments = ["detach", mountPoint, "-quiet"]
         try? process.run()
-
-        // Terminate the current app.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            NSApplication.shared.terminate(nil)
-        }
+        process.waitUntilExit()
     }
 
     // MARK: - Version Helpers

@@ -59,6 +59,11 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
+                // Update banner — full window width, above the split view
+                if updater.showsBanner {
+                    UpdateBanner()
+                }
+
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView(
                         documentManager: documentManager,
@@ -250,12 +255,6 @@ struct ContentView: View {
     @ViewBuilder
     private var detailContent: some View {
         VStack(spacing: 0) {
-            // Update available banner
-            if updater.hasUpdate, let version = updater.availableVersion {
-                UpdateAvailableBanner(version: version)
-                Divider()
-            }
-
             // Back to search banner — shown when navigating from a search result
             if appState.lastSearchQuery != nil && !appState.activeScreen.isSearchResults {
                 if let q = appState.lastSearchQuery {
@@ -436,47 +435,131 @@ final class RecorderHolder: ObservableObject {
     }
 }
 
-// MARK: - Update Available Banner
+// MARK: - Update Banner
 
-/// Thin banner shown when a new version is available. Clicking opens Settings.
-struct UpdateAvailableBanner: View {
-    let version: String
+/// Catpuccin Mocha green: #a6e3a1
+private let catpuccinGreen = Color(red: 166.0/255, green: 227.0/255, blue: 161.0/255)
+/// Darker variant for text contrast
+private let catpuccinGreenDark = Color(red: 30.0/255, green: 56.0/255, blue: 28.0/255)
+
+/// Banner shown across the top of the detail pane for all active update states.
+/// Provides clear feedback for every phase: available, downloading, ready, installing.
+struct UpdateBanner: View {
     @ObservedObject private var updater = AppUpdater.shared
 
     var body: some View {
         HStack(spacing: 8) {
+            statusContent
+            Spacer()
+            actionButtons
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(catpuccinGreen)
+        .animation(.easeInOut(duration: 0.2), value: updater.state)
+    }
+
+    @ViewBuilder
+    private var statusContent: some View {
+        switch updater.state {
+        case .available(let version, _, _):
             Image(systemName: "arrow.down.circle.fill")
-                .foregroundStyle(.white)
+                .foregroundStyle(catpuccinGreenDark)
                 .font(.caption)
             Text("Version \(version) is available")
                 .font(.caption)
                 .fontWeight(.medium)
-                .foregroundStyle(.white)
+                .foregroundStyle(catpuccinGreenDark)
 
-            Spacer()
+        case .downloading(let progress):
+            ProgressView(value: progress)
+                .progressViewStyle(.linear)
+                .frame(width: 80)
+                .tint(catpuccinGreenDark)
+            Text("Downloading update... \(Int(progress * 100))%")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundStyle(catpuccinGreenDark)
+                .monospacedDigit()
 
+        case .readyToInstall:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(catpuccinGreenDark)
+                .font(.caption)
+            Text("Update downloaded. Ready to install.")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundStyle(catpuccinGreenDark)
+
+        case .installing:
+            // statusContent is empty — the action buttons area shows the spinner
+            EmptyView()
+
+        default:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        switch updater.state {
+        case .available:
             Button("Update Now") {
                 Task { await updater.downloadUpdate() }
             }
             .font(.caption)
+            .fontWeight(.medium)
             .buttonStyle(.plain)
-            .foregroundStyle(.white)
+            .foregroundStyle(catpuccinGreenDark)
             .padding(.horizontal, 10)
             .padding(.vertical, 3)
-            .background(.white.opacity(0.2), in: RoundedRectangle(cornerRadius: 4))
+            .background(catpuccinGreenDark.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
 
             Button {
                 updater.dismissUpdate()
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.7))
+                    .foregroundStyle(catpuccinGreenDark.opacity(0.6))
             }
             .buttonStyle(.plain)
+
+        case .downloading:
+            Button("Cancel") {
+                updater.cancelDownload()
+            }
+            .font(.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(catpuccinGreenDark.opacity(0.7))
+
+        case .readyToInstall:
+            Button {
+                Task { await updater.installUpdate() }
+            } label: {
+                Label("Install and Relaunch", systemImage: "arrow.clockwise")
+                    .font(.caption)
+                    .fontWeight(.medium)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(catpuccinGreenDark)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 3)
+            .background(catpuccinGreenDark.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
+
+        case .installing:
+            // Brief flash before the app terminates and relaunches
+            HStack(spacing: 4) {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(catpuccinGreenDark)
+                Text("Restarting...")
+                    .font(.caption)
+                    .foregroundStyle(catpuccinGreenDark)
+            }
+
+        default:
+            EmptyView()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.blue.gradient)
     }
 }
 
