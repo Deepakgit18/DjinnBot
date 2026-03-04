@@ -283,7 +283,11 @@ struct MeetingDetailView: View {
     }
 
     private var transcriptList: some View {
-        ScrollViewReader { proxy in
+        // Pre-compute once per body evaluation — not per row.
+        let voices = VoiceID.shared.allEnrolledVoices()
+        let speakers = callSpeakers
+
+        return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
@@ -292,8 +296,8 @@ struct MeetingDetailView: View {
                             player: player,
                             recordingURL: meeting.recordingURL,
                             hasRecording: hasRecording,
-                            enrolledVoices: VoiceID.shared.allEnrolledVoices(),
-                            callSpeakers: callSpeakers,
+                            enrolledVoices: voices,
+                            callSpeakers: speakers,
                             onEnroll: { e in
                                 selectedEntry = e
                                 enrollName = ""
@@ -517,6 +521,9 @@ struct MeetingDetailView: View {
     // MARK: - Loading
 
     private func loadTranscript() {
+        // Clear the height cache — different meeting, different text widths.
+        SegmentHeightCache.shared.clear()
+
         guard meeting.hasTranscript else {
             entries = []
             undoHelper.liveEntries = entries
@@ -948,6 +955,31 @@ private struct EditSegmentSheet: View {
     }
 }
 
+// MARK: - Height Cache
+
+/// Shared cache of calculated text heights keyed by entry ID.
+/// Persists across LazyVStack view creation/destruction so rows start at the
+/// correct height immediately instead of jumping from the 16px default.
+/// This eliminates cascading layout instability during scroll.
+private final class SegmentHeightCache {
+    static let shared = SegmentHeightCache()
+    private var cache: [UUID: CGFloat] = [:]
+    private init() {}
+
+    func height(for id: UUID) -> CGFloat {
+        cache[id] ?? 16
+    }
+
+    func setHeight(_ height: CGFloat, for id: UUID) {
+        cache[id] = height
+    }
+
+    /// Clear the cache (e.g. when switching meetings).
+    func clear() {
+        cache.removeAll()
+    }
+}
+
 // MARK: - Segment NSTextView
 
 /// Custom NSTextView subclass that overrides the right-click context menu.
@@ -1004,6 +1036,7 @@ private class SegmentNSTextView: NSTextView {
 /// menu. When text is selected, an additional "Reassign Selected to >" submenu
 /// appears at the top — enabling inline split & reassign without any sheet.
 private struct SegmentTextView: NSViewRepresentable {
+    let entryID: UUID
     let text: String
     @Binding var height: CGFloat
 
@@ -1113,6 +1146,10 @@ private struct SegmentTextView: NSViewRepresentable {
             // caused by layout oscillation (e.g. scrollbar show/hide changing width).
             guard heightUpdateCount < Coordinator.maxHeightUpdates else { return }
             heightUpdateCount += 1
+            // Write to the shared cache so that if this row scrolls off screen
+            // and back on, the LazyVStack creates it at the correct height
+            // immediately — no layout jump.
+            SegmentHeightCache.shared.setHeight(newHeight, for: parent.entryID)
             DispatchQueue.main.async {
                 self.parent.height = newHeight
             }
@@ -1292,7 +1329,39 @@ private struct MeetingTranscriptRow: View {
     let onEdit: (TranscriptEntry) -> Void
     let onSplitReassign: (TranscriptEntry, NSRange, String) -> Void
 
-    @State private var textHeight: CGFloat = 16
+    /// Start at the cached height (if any) to avoid layout jumps in LazyVStack.
+    @State private var textHeight: CGFloat
+
+    init(
+        entry: TranscriptEntry,
+        player: MeetingPlayer,
+        recordingURL: URL,
+        hasRecording: Bool,
+        enrolledVoices: [VoiceEmbedding],
+        callSpeakers: [String],
+        onEnroll: @escaping (TranscriptEntry) -> Void,
+        onReassign: @escaping (TranscriptEntry, String) -> Void,
+        onReassignAll: @escaping (TranscriptEntry, String) -> Void,
+        onEnhance: @escaping (TranscriptEntry, String) -> Void,
+        onEdit: @escaping (TranscriptEntry) -> Void,
+        onSplitReassign: @escaping (TranscriptEntry, NSRange, String) -> Void
+    ) {
+        self.entry = entry
+        self._player = ObservedObject(wrappedValue: player)
+        self.recordingURL = recordingURL
+        self.hasRecording = hasRecording
+        self.enrolledVoices = enrolledVoices
+        self.callSpeakers = callSpeakers
+        self.onEnroll = onEnroll
+        self.onReassign = onReassign
+        self.onReassignAll = onReassignAll
+        self.onEnhance = onEnhance
+        self.onEdit = onEdit
+        self.onSplitReassign = onSplitReassign
+        // Initialize @State from the shared height cache so LazyVStack rows
+        // don't jump from 16px → real height on every scroll.
+        self._textHeight = State(initialValue: SegmentHeightCache.shared.height(for: entry.id))
+    }
 
     private var isActiveSegment: Bool {
         player.isPlaying &&
@@ -1324,6 +1393,7 @@ private struct MeetingTranscriptRow: View {
 
             // Text — custom NSTextView with full context menu
             SegmentTextView(
+                entryID: entry.id,
                 text: entry.text,
                 height: $textHeight,
                 enrolledVoices: enrolledVoices,
