@@ -68,6 +68,8 @@
 		PP000003 /* LoadingIndicatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000013 /* LoadingIndicatorView.swift */; };
 		PP000005 /* VoiceCommandTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000014 /* VoiceCommandTranscriber.swift */; };
 		SS000001 /* AudioInputDeviceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = SS000011 /* AudioInputDeviceManager.swift */; };
+		TT000001 /* TranscriptDocumentEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = TT000011 /* TranscriptDocumentEditor.swift */; };
+		TT000002 /* TranscriptDocumentEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = TT000012 /* TranscriptDocumentEditView.swift */; };
 		RR000001 /* NoteExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR000011 /* NoteExporter.swift */; };
 		PP000004 /* LoadingIcon in Resources */ = {isa = PBXBuildFile; fileRef = PP000020 /* LoadingIcon */; };
 		QQ000001 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = QQ000011 /* AppIcon.icns */; };
@@ -132,6 +134,8 @@
 		PP000013 /* LoadingIndicatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoadingIndicatorView.swift; sourceTree = "<group>"; };
 		PP000014 /* VoiceCommandTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandTranscriber.swift; sourceTree = "<group>"; };
 		SS000011 /* AudioInputDeviceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioInputDeviceManager.swift; sourceTree = "<group>"; };
+		TT000011 /* TranscriptDocumentEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptDocumentEditor.swift; sourceTree = "<group>"; };
+		TT000012 /* TranscriptDocumentEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptDocumentEditView.swift; sourceTree = "<group>"; };
 		RR000011 /* NoteExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteExporter.swift; sourceTree = "<group>"; };
 		PP000020 /* LoadingIcon */ = {isa = PBXFileReference; lastKnownFileType = folder; path = LoadingIcon; sourceTree = "<group>"; };
 		QQ000011 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
@@ -234,6 +238,7 @@
 				BB000015 /* KeychainManager.swift */,
 				BB000016 /* DocumentManager.swift */,
 				GG000011 /* MeetingStore.swift */,
+				TT000011 /* TranscriptDocumentEditor.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -249,6 +254,7 @@
 				GG000012 /* MeetingDetailView.swift */,
 				JJ000013 /* SpeakerProfilesView.swift */,
 				JJ000014 /* VoiceEnrollmentSheet.swift */,
+				TT000012 /* TranscriptDocumentEditView.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
@@ -508,6 +514,8 @@
 				FF00000E /* MeetingPipeline.swift in Sources */,
 				FF00000F /* AudioConverter.swift in Sources */,
 				SS000001 /* AudioInputDeviceManager.swift in Sources */,
+				TT000001 /* TranscriptDocumentEditor.swift in Sources */,
+				TT000002 /* TranscriptDocumentEditView.swift in Sources */,
 				GG000001 /* MeetingStore.swift in Sources */,
 				GG000002 /* MeetingDetailView.swift in Sources */,
 				HH000001 /* ModelPreloader.swift in Sources */,

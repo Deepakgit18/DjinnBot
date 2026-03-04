@@ -49,6 +49,9 @@ struct MeetingDetailView: View {
     /// Success toast.
     @State private var toastMessage: String?
 
+    /// Full-document editing sheet.
+    @State private var showDocumentEdit = false
+
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
@@ -104,6 +107,17 @@ struct MeetingDetailView: View {
                 saveEdit(entryID: entry.id, newText: newText)
             }
         }
+        .sheet(isPresented: $showDocumentEdit) {
+            TranscriptDocumentEditView(
+                originalEntries: entries,
+                onSave: { newEntries in
+                    entries = newEntries
+                    collapseAdjacentEntries()
+                    MeetingStore.shared.saveTranscriptEntries(for: meeting, entries: entries)
+                    showToast("Transcript updated")
+                }
+            )
+        }
     }
 
     // MARK: - Header
@@ -120,6 +134,17 @@ struct MeetingDetailView: View {
             }
 
             Spacer()
+
+            if !entries.isEmpty {
+                Button {
+                    showDocumentEdit = true
+                } label: {
+                    Label("Edit as Document", systemImage: "doc.text")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .help("Edit the entire transcript as a single document")
+            }
 
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([meeting.folderURL])
@@ -873,11 +898,21 @@ private struct SegmentTextView: NSViewRepresentable {
     }
 
     func updateNSView(_ tv: SegmentNSTextView, context: Context) {
-        if tv.string != text {
-            tv.string = text
-        }
         // Keep coordinator in sync with latest parent values
         context.coordinator.parent = self
+
+        if tv.string != text {
+            tv.string = text
+            // Programmatic string assignment doesn't trigger didChangeText(),
+            // so the height callback never fires. Force a layout + recalc.
+            tv.invalidateIntrinsicContentSize()
+            if let container = tv.textContainer, let lm = tv.layoutManager {
+                lm.ensureLayout(for: container)
+                let usedRect = lm.usedRect(for: container)
+                let newHeight = max(ceil(usedRect.height), 16)
+                context.coordinator.updateHeight(newHeight)
+            }
+        }
     }
 
     func makeCoordinator() -> Coordinator {
