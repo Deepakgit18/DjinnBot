@@ -60,24 +60,44 @@ struct ToolbarSearchBar: View {
                         .foregroundStyle(.secondary)
                         .font(.system(size: 13))
                         .frame(width: 20, height: 20)
-                        .contentShape(Rectangle())
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .help("Search (Cmd+Shift+F)")
             }
         }
-        .padding(.horizontal, isActive ? 8 : 0)
-        .padding(.vertical, isActive ? 4 : 0)
-        .frame(width: isActive ? 240 : 20)
-        .background {
-            if isActive {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(.ultraThinMaterial)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
-                    )
-            }
+        .padding(.horizontal, isActive ? 6 : 0)
+        .padding(.vertical, isActive ? 2 : 0)
+        .frame(width: isActive ? 220 : 20)
+        // On macOS 26+, the toolbar automatically applies liquid glass
+        // to its items — we don't add our own glass effect. The text
+        // field has no border/background so it blends into the toolbar's
+        // native glass seamlessly. On older macOS, fall back to a subtle
+        // material capsule.
+        .modifier(SearchBarBackgroundModifier(isActive: isActive))
+    }
+}
+
+/// On pre-macOS 26, adds a subtle material background. On macOS 26+, does nothing —
+/// the toolbar's native liquid glass handles the visual.
+private struct SearchBarBackgroundModifier: ViewModifier {
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+        } else {
+            content
+                .background {
+                    if isActive {
+                        Capsule()
+                            .fill(.ultraThinMaterial)
+                            .overlay(
+                                Capsule()
+                                    .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
+                            )
+                    }
+                }
         }
     }
 }
