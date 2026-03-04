@@ -22,12 +22,13 @@ BUILD_DIR="$SCRIPT_DIR/build"
 ARCHIVE_PATH="$BUILD_DIR/Dialogue.xcarchive"
 EXPORT_PATH="$BUILD_DIR/export"
 VERSION="${1:-dev}"
+BUILD_NUMBER="${2:-$(date +%s)}"
 
 echo "==> Cleaning build directory"
 rm -rf "$ARCHIVE_PATH" "$EXPORT_PATH"
 mkdir -p "$BUILD_DIR" "$EXPORT_PATH"
 
-echo "==> Archiving ($VERSION)"
+echo "==> Archiving ($VERSION, build $BUILD_NUMBER)"
 xcodebuild archive \
   -project "$PROJECT" \
   -scheme "$SCHEME" \
@@ -36,6 +37,8 @@ xcodebuild archive \
   ARCHS=arm64 \
   ENABLE_HARDENED_RUNTIME=YES \
   OTHER_CODE_SIGN_FLAGS="--timestamp" \
+  MARKETING_VERSION="$VERSION" \
+  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   | xcbeautify 2>/dev/null || true
 
 # Verify archive was created

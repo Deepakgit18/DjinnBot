@@ -82,9 +82,20 @@ jobs:
             -scheme "$SCHEME" \
             -clonedSourcePackagesDirPath "$SPM_CACHE_DIR"
 
+      # Extract version from tag (e.g. app-v1.2.3 -> 1.2.3)
+      # The version is baked into the app bundle so "About Dialogue" shows it.
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#app-v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "App version: $VERSION (build ${{ github.run_id }})"
+
       # The project has per-target signing: Release config uses Manual with
       # Developer ID + provisioning profile. SPM targets stay Automatic.
       - name: Archive
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
         run: |
           xcodebuild archive \
             -project "$PROJECT_DIR/Dialogue.xcodeproj" \
@@ -95,6 +106,8 @@ jobs:
             ARCHS=arm64 \
             ENABLE_HARDENED_RUNTIME=YES \
             OTHER_CODE_SIGN_FLAGS="--timestamp" \
+            MARKETING_VERSION="$APP_VERSION" \
+            CURRENT_PROJECT_VERSION="${{ github.run_id }}" \
             | xcbeautify || true
 
           test -d "$ARCHIVE_PATH" || { echo "error: Archive failed"; exit 1; }
@@ -122,11 +135,12 @@ jobs:
           xcrun stapler staple "$EXPORT_PATH/Dialogue.app"
 
       - name: Create DMG
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
         run: |
           brew install create-dmg
 
-          VERSION="${GITHUB_REF_NAME#app-v}"
-          DMG_NAME="Dialogue-${VERSION}.dmg"
+          DMG_NAME="Dialogue-${APP_VERSION}.dmg"
 
           # create-dmg returns exit code 2 if it can't set the custom icon — still valid
           create-dmg \
@@ -148,9 +162,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: 8H548FVL95
+          APP_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#app-v}"
-          DMG_PATH="$EXPORT_PATH/Dialogue-${VERSION}.dmg"
+          DMG_PATH="$EXPORT_PATH/Dialogue-${APP_VERSION}.dmg"
 
           codesign --force --sign "Developer ID Application: Michael Moore (8H548FVL95)" \
             --timestamp "$DMG_PATH"
