@@ -232,6 +232,11 @@ struct MeetingsListView: View {
                 } label: {
                     Label("Rename", systemImage: "pencil")
                 }
+                Button {
+                    copyTranscriptAsText(meeting)
+                } label: {
+                    Label("Copy Transcript", systemImage: "doc.on.doc")
+                }
                 Divider()
                 Button(role: .destructive) {
                     meetingToDelete = meeting
@@ -275,6 +280,48 @@ struct MeetingsListView: View {
                 Text("Are you sure you want to delete \"\(meeting.displayName)\"? This cannot be undone.")
             }
         }
+    }
+
+    // MARK: - Copy Transcript
+
+    private func copyTranscriptAsText(_ meeting: SavedMeeting) {
+        guard let entries = MeetingStore.shared.loadTranscript(for: meeting), !entries.isEmpty else {
+            return
+        }
+
+        func formatTimestamp(_ seconds: TimeInterval) -> String {
+            let m = Int(seconds) / 60
+            let s = Int(seconds) % 60
+            return String(format: "%d:%02d", m, s)
+        }
+
+        // Collapse adjacent same-speaker segments
+        struct CollapsedSegment {
+            let speaker: String
+            let start: TimeInterval
+            var text: String
+        }
+
+        var collapsed: [CollapsedSegment] = []
+        for entry in entries {
+            if var last = collapsed.last,
+               last.speaker == entry.speaker,
+               entry.speaker != "Speaker-?" {
+                last.text += " " + entry.text.trimmingCharacters(in: .whitespaces)
+                collapsed[collapsed.count - 1] = last
+            } else {
+                collapsed.append(CollapsedSegment(speaker: entry.speaker, start: entry.start, text: entry.text))
+            }
+        }
+
+        let lines = collapsed.map { seg in
+            let time = formatTimestamp(seg.start)
+            return "[\(time)] \(seg.speaker): \(seg.text)"
+        }
+
+        let text = lines.joined(separator: "\n\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 

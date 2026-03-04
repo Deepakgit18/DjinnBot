@@ -220,7 +220,7 @@ final class MeetingStore: ObservableObject {
                     return String(format: "%d:%02d %@: %@", minutes, seconds, entry.speaker, entry.text)
                 }
                 let txtURL = meetingFolder.appendingPathComponent("transcript.txt")
-                try lines.joined(separator: "\n").write(to: txtURL, atomically: true, encoding: .utf8)
+                try lines.joined(separator: "\n\n").write(to: txtURL, atomically: true, encoding: .utf8)
 
                 // Write word-level timings for post-recording refinement
                 let wordTimingEntries = segments.compactMap { seg -> WordTimingEntry? in
@@ -311,7 +311,7 @@ final class MeetingStore: ObservableObject {
                 return String(format: "%d:%02d %@: %@", minutes, seconds, entry.speaker, entry.text)
             }
             let txtURL = meeting.folderURL.appendingPathComponent("transcript.txt")
-            try lines.joined(separator: "\n").write(to: txtURL, atomically: true, encoding: .utf8)
+            try lines.joined(separator: "\n\n").write(to: txtURL, atomically: true, encoding: .utf8)
 
             logger.info("Updated transcript with \(segments.count) refined segments")
         } catch {
@@ -341,7 +341,7 @@ final class MeetingStore: ObservableObject {
                 return String(format: "%d:%02d %@: %@", minutes, seconds, entry.speaker, entry.text)
             }
             let txtURL = meeting.folderURL.appendingPathComponent("transcript.txt")
-            try lines.joined(separator: "\n").write(to: txtURL, atomically: true, encoding: .utf8)
+            try lines.joined(separator: "\n\n").write(to: txtURL, atomically: true, encoding: .utf8)
 
             logger.info("Saved \(entries.count) transcript entries for \(meeting.id)")
         } catch {

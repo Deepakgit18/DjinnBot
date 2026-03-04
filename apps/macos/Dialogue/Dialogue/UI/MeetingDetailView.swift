@@ -226,6 +226,9 @@ struct MeetingDetailView: View {
                         onReassign: { _, userID in
                             reassignEntry(at: index, to: userID)
                         },
+                        onReassignAll: { e, userID in
+                            reassignAllEntries(from: e.speaker, to: userID)
+                        },
                         onEnhance: { e, userID in
                             Task { await enhanceVoice(entry: e, userID: userID) }
                         },
@@ -450,6 +453,13 @@ struct MeetingDetailView: View {
         collapseAdjacentEntries()
         MeetingStore.shared.saveTranscriptEntries(for: meeting, entries: entries)
         showToast("Reassigned to \(newSpeaker)")
+    }
+
+    // MARK: - Reassign All Segments of a Speaker
+
+    private func reassignAllEntries(from oldSpeaker: String, to newSpeaker: String) {
+        reassignMatchingSpeaker(oldSpeaker: oldSpeaker, newSpeaker: newSpeaker)
+        showToast("Reassigned all \(oldSpeaker) to \(newSpeaker)")
     }
 
     // MARK: - Edit Segment Text
@@ -829,6 +839,7 @@ private struct SegmentTextView: NSViewRepresentable {
     let onEdit: () -> Void
     let onEnroll: () -> Void
     let onReassign: (String) -> Void
+    let onReassignAll: (String) -> Void
     let onEnhance: (String) -> Void
     let onSplitReassign: (NSRange, String) -> Void
 
@@ -892,6 +903,14 @@ private struct SegmentTextView: NSViewRepresentable {
             }
         }
 
+        /// Container for reassign-all action data attached to menu items.
+        private class ReassignAllAction: NSObject {
+            let speaker: String
+            init(speaker: String) {
+                self.speaker = speaker
+            }
+        }
+
         func updateHeight(_ newHeight: CGFloat) {
             guard abs(newHeight - parent.height) > 0.5 else { return }
             DispatchQueue.main.async {
@@ -948,24 +967,38 @@ private struct SegmentTextView: NSViewRepresentable {
 
             // ── Reassign whole segment ──
             let reassignSubmenu = NSMenu()
-            for voice in p.enrolledVoices {
-                let item = NSMenuItem(title: voice.userID, action: #selector(reassignAction(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = voice.userID as NSString
-                if voice.userID == p.currentSpeaker { item.isEnabled = false }
-                reassignSubmenu.addItem(item)
+            let allTargets: [(String, Bool)] = // (speaker, isEnabled)
+                p.enrolledVoices.map { ($0.userID, $0.userID != p.currentSpeaker) }
+                + p.callSpeakers.filter { $0 != p.currentSpeaker }.map { ($0, true) }
+
+            for (speaker, enabled) in allTargets {
+                let perSpeakerSub = NSMenu()
+
+                let thisItem = NSMenuItem(
+                    title: "Just This Segment",
+                    action: #selector(reassignAction(_:)),
+                    keyEquivalent: ""
+                )
+                thisItem.target = self
+                thisItem.representedObject = speaker as NSString
+                perSpeakerSub.addItem(thisItem)
+
+                let allItem = NSMenuItem(
+                    title: "All \(p.currentSpeaker) Segments",
+                    action: #selector(reassignAllAction(_:)),
+                    keyEquivalent: ""
+                )
+                allItem.target = self
+                allItem.representedObject = ReassignAllAction(speaker: speaker)
+                perSpeakerSub.addItem(allItem)
+
+                let speakerItem = NSMenuItem(title: speaker, action: nil, keyEquivalent: "")
+                speakerItem.submenu = perSpeakerSub
+                speakerItem.isEnabled = enabled
+                reassignSubmenu.addItem(speakerItem)
             }
-            let nonEnrolled = p.callSpeakers.filter { $0 != p.currentSpeaker }
-            if !p.enrolledVoices.isEmpty && !nonEnrolled.isEmpty {
-                reassignSubmenu.addItem(.separator())
-            }
-            for speaker in nonEnrolled {
-                let item = NSMenuItem(title: speaker, action: #selector(reassignAction(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = speaker as NSString
-                reassignSubmenu.addItem(item)
-            }
-            if reassignSubmenu.items.isEmpty {
+
+            if allTargets.isEmpty {
                 reassignSubmenu.addItem(NSMenuItem(title: "No other speakers", action: nil, keyEquivalent: ""))
             }
             let reassignItem = NSMenuItem(title: "Reassign to", action: nil, keyEquivalent: "")
@@ -1025,6 +1058,11 @@ private struct SegmentTextView: NSViewRepresentable {
             DispatchQueue.main.async { self.parent.onReassign(speaker as String) }
         }
 
+        @objc func reassignAllAction(_ sender: NSMenuItem) {
+            guard let action = sender.representedObject as? ReassignAllAction else { return }
+            DispatchQueue.main.async { self.parent.onReassignAll(action.speaker) }
+        }
+
         @objc func enhanceAction(_ sender: NSMenuItem) {
             guard let userID = sender.representedObject as? NSString else { return }
             DispatchQueue.main.async { self.parent.onEnhance(userID as String) }
@@ -1049,6 +1087,7 @@ private struct MeetingTranscriptRow: View {
 
     let onEnroll: (TranscriptEntry) -> Void
     let onReassign: (TranscriptEntry, String) -> Void
+    let onReassignAll: (TranscriptEntry, String) -> Void
     let onEnhance: (TranscriptEntry, String) -> Void
     let onEdit: (TranscriptEntry) -> Void
     let onSplitReassign: (TranscriptEntry, NSRange, String) -> Void
@@ -1095,6 +1134,7 @@ private struct MeetingTranscriptRow: View {
                 onEdit: { onEdit(entry) },
                 onEnroll: { onEnroll(entry) },
                 onReassign: { speaker in onReassign(entry, speaker) },
+                onReassignAll: { speaker in onReassignAll(entry, speaker) },
                 onEnhance: { userID in onEnhance(entry, userID) },
                 onSplitReassign: { range, speaker in onSplitReassign(entry, range, speaker) }
             )
@@ -1147,14 +1187,20 @@ private struct MeetingTranscriptRow: View {
             Menu("Reassign to") {
                 if !enrolledVoices.isEmpty {
                     ForEach(enrolledVoices) { voice in
-                        Button(voice.userID) { onReassign(entry, voice.userID) }
-                            .disabled(voice.userID == entry.speaker)
+                        Menu(voice.userID) {
+                            Button("Just This Segment") { onReassign(entry, voice.userID) }
+                            Button("All \(entry.speaker) Segments") { onReassignAll(entry, voice.userID) }
+                        }
+                        .disabled(voice.userID == entry.speaker)
                     }
                 }
                 if !reassignableCallSpeakers.isEmpty {
                     if !enrolledVoices.isEmpty { Divider() }
                     ForEach(reassignableCallSpeakers, id: \.self) { speaker in
-                        Button(speaker) { onReassign(entry, speaker) }
+                        Menu(speaker) {
+                            Button("Just This Segment") { onReassign(entry, speaker) }
+                            Button("All \(entry.speaker) Segments") { onReassignAll(entry, speaker) }
+                        }
                     }
                 }
             }

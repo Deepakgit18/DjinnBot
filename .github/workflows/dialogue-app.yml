@@ -5,7 +5,7 @@ on:
     tags: ["app-v[0-9]+.[0-9]+.[0-9]+*"]
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   PROJECT_DIR: apps/macos/Dialogue
@@ -183,6 +183,18 @@ jobs:
           name: Dialogue-${{ github.ref_name }}
           path: ${{ env.EXPORT_PATH }}/Dialogue-*.dmg
           if-no-files-found: error
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          DMG_PATH="$EXPORT_PATH/Dialogue-${APP_VERSION}.dmg"
+
+          gh release create "$GITHUB_REF_NAME" "$DMG_PATH" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Dialogue v${APP_VERSION}" \
+            --generate-notes
 
       - name: Cleanup keychain
         if: always()
