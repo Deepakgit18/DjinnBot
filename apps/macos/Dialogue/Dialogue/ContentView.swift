@@ -47,6 +47,15 @@ struct ContentView: View {
     /// App updater for showing update-available banner.
     @ObservedObject private var updater = AppUpdater.shared
 
+    // MARK: - Permission Onboarding
+
+    /// Centralized permission manager — drives the onboarding overlay.
+    @ObservedObject private var permissions = PermissionManager.shared
+
+    /// Whether the permission onboarding screen is shown.
+    /// Starts `true` and flips to `false` once all required permissions are confirmed.
+    @State private var showPermissionOnboarding = true
+
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
@@ -135,6 +144,17 @@ struct ContentView: View {
                 detector: bottomEdgeDetector,
                 isVisible: $chatToolbarVisible
             )
+
+            // Permission onboarding overlay — covers everything until required
+            // permissions are granted.
+            if showPermissionOnboarding {
+                PermissionOnboardingView {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        showPermissionOnboarding = false
+                    }
+                }
+                .transition(.opacity)
+            }
         }
         .frame(minWidth: 800, minHeight: 500)
         .onChange(of: bottomEdgeDetector.isNearBottom) { _, isNear in
@@ -169,6 +189,13 @@ struct ContentView: View {
                 }
             }
         }
+        .task {
+            // Check permissions on launch — skip onboarding if already granted.
+            await permissions.refreshAll()
+            if permissions.allRequiredGranted {
+                showPermissionOnboarding = false
+            }
+        }
         // Phase 3: Chat panel keyboard shortcuts
         .onReceive(NotificationCenter.default.publisher(for: .toggleChatPanel)) { _ in
             toggleChatToolbar()
@@ -181,6 +208,12 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .closeChatPanel)) { _ in
             bottomEdgeDetector.forceHide()
             chatToolbarVisible = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showChatPanel)) { _ in
+            if !chatToolbarVisible {
+                bottomEdgeDetector.forceShow()
+                chatToolbarVisible = true
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleRecording)) { _ in
             if #available(macOS 26.0, *) {

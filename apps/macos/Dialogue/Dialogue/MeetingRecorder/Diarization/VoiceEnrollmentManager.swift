@@ -286,6 +286,13 @@ final class VoiceEnrollmentManager: ObservableObject {
         default: return
         }
 
+        // Verify microphone permission before starting.
+        PermissionManager.shared.checkMicrophone()
+        guard PermissionManager.shared.microphoneStatus == .granted else {
+            state = .error("Microphone access is required. Open System Settings > Privacy & Security > Microphone.")
+            return
+        }
+
         // Stop preview — we'll use a dedicated recording engine
         stopPreview()
 

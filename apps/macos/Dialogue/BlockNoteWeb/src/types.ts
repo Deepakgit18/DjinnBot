@@ -26,6 +26,15 @@ declare global {
     /** Called by Swift to export blocks to full BlockNote HTML */
     exportFullHTML?: (blocksJSON: string) => Promise<string>;
 
+    /** Called by Swift to insert text at the current cursor position (voice dictation) */
+    insertTextAtCursor?: (text: string) => void;
+
+    /** Called by Swift to check if the editor currently has focus */
+    editorHasFocus?: () => boolean;
+
+    /** Called by Swift to get the currently selected text (empty if no selection) */
+    getSelectedText?: () => string;
+
     /** Called by Swift to dispatch a streamed AI chunk */
     dispatchAIChunk?: (data: {
       requestId: string;

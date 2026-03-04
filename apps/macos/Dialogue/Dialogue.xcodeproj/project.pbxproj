@@ -78,6 +78,8 @@
 		RR000001 /* NoteExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR000011 /* NoteExporter.swift */; };
 		PP000004 /* LoadingIcon in Resources */ = {isa = PBXBuildFile; fileRef = PP000020 /* LoadingIcon */; };
 		QQ000001 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = QQ000011 /* AppIcon.icns */; };
+		VV000001 /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = VV000011 /* PermissionManager.swift */; };
+		VV000002 /* PermissionOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = VV000012 /* PermissionOnboardingView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -148,6 +150,8 @@
 		UU000012 /* SearchResultsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchResultsView.swift; sourceTree = "<group>"; };
 		UU000013 /* InDocumentSearchOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InDocumentSearchOverlay.swift; sourceTree = "<group>"; };
 		UU000014 /* AppUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdater.swift; sourceTree = "<group>"; };
+		VV000011 /* PermissionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionManager.swift; sourceTree = "<group>"; };
+		VV000012 /* PermissionOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionOnboardingView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -251,6 +255,7 @@
 				TT000011 /* TranscriptDocumentEditor.swift */,
 				UU000011 /* SearchEngine.swift */,
 				UU000014 /* AppUpdater.swift */,
+				VV000011 /* PermissionManager.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -269,6 +274,7 @@
 				TT000012 /* TranscriptDocumentEditView.swift */,
 				UU000012 /* SearchResultsView.swift */,
 				UU000013 /* InDocumentSearchOverlay.swift */,
+				VV000012 /* PermissionOnboardingView.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
@@ -471,7 +477,8 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(SRCROOT)/BlockNoteWeb/src/",
+				"$(SRCROOT)/BlockNoteWeb/src/App.tsx",
+				"$(SRCROOT)/BlockNoteWeb/src/types.ts",
 				"$(SRCROOT)/BlockNoteWeb/package.json",
 				"$(SRCROOT)/BlockNoteWeb/vite.config.ts",
 				"$(SRCROOT)/BlockNoteWeb/index.html",
@@ -554,6 +561,8 @@
 				UU000002 /* SearchResultsView.swift in Sources */,
 				UU000003 /* InDocumentSearchOverlay.swift in Sources */,
 				UU000004 /* AppUpdater.swift in Sources */,
+				VV000001 /* PermissionManager.swift in Sources */,
+				VV000002 /* PermissionOnboardingView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

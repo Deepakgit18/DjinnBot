@@ -51,6 +51,7 @@ enum BridgeCommandToJS {
     case setTheme(dark: Bool)
     case dispatchAIChunk(requestId: String, chunk: String, done: Bool)
     case aiRequestError(requestId: String, error: String)
+    case insertTextAtCursor(text: String)
 
     /// Generate the JavaScript string to evaluate.
     var javaScript: String {
@@ -81,6 +82,14 @@ enum BridgeCommandToJS {
                 .replacingOccurrences(of: "'", with: "\\'")
                 .replacingOccurrences(of: "\n", with: "\\n")
             return "window.dispatchAIError && window.dispatchAIError({requestId: '\(requestId)', error: '\(escapedError)'});"
+
+        case .insertTextAtCursor(let text):
+            let escaped = text
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+                .replacingOccurrences(of: "\n", with: "\\n")
+                .replacingOccurrences(of: "\r", with: "\\r")
+            return "window.insertTextAtCursor && window.insertTextAtCursor('\(escaped)');"
         }
     }
 }

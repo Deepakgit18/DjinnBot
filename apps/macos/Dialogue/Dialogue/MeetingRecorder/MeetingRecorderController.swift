@@ -85,8 +85,20 @@ final class MeetingRecorderController: ObservableObject {
     func start() async {
         guard !isRecording, !isStarting else { return }
         isStarting = true
-        preparationStatus = "Detecting meeting apps…"
+        preparationStatus = "Checking permissions…"
         errorMessage = nil
+
+        // Verify required permissions before starting.
+        await PermissionManager.shared.refreshAll()
+        guard PermissionManager.shared.microphoneStatus == .granted else {
+            isStarting = false
+            preparationStatus = nil
+            errorMessage = "Microphone access is required. Open System Settings > Privacy & Security > Microphone."
+            logger.error("Cannot start recording: microphone not authorized")
+            return
+        }
+
+        preparationStatus = "Detecting meeting apps…"
 
         do {
             // Detect meeting apps

@@ -23,6 +23,13 @@ actor VoiceCommandTranscriber {
     /// Current mic audio level (0–1) for the waveform.
     @MainActor var audioLevel: Float = 0
 
+    /// The finalized text so far (only confirmed words, no partial).
+    /// Used by dictation mode to know what's safe to insert.
+    var currentFinalizedText: String { finalizedText }
+
+    /// Length of finalized text (convenience for diffing).
+    var finalizedTextLength: Int { finalizedText.count }
+
     // MARK: - Private
 
     private let logger = Logger(subsystem: "bot.djinn.app.dialog", category: "VoiceCommandASR")

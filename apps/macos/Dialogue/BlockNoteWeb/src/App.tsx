@@ -129,6 +129,35 @@ function App() {
     [editor]
   );
 
+  // Bridge: insert text at the current cursor position (for voice dictation).
+  // Chain focus() first — TipTap's internal focus state may be stale after a
+  // global hotkey intercepts the key event at the system level.
+  const insertTextAtCursor = useCallback(
+    (text: string) => {
+      if (!text) return;
+      const tiptap = (editor as any)._tiptapEditor;
+      if (tiptap) {
+        tiptap.chain().focus().insertContent(text).run();
+      }
+    },
+    [editor]
+  );
+
+  // Bridge: check if the editor currently has focus
+  const editorHasFocus = useCallback((): boolean => {
+    const tiptap = (editor as any)._tiptapEditor;
+    return tiptap?.isFocused ?? false;
+  }, [editor]);
+
+  // Bridge: get the currently selected text in the editor (empty string if no selection)
+  const getSelectedText = useCallback((): string => {
+    const tiptap = (editor as any)._tiptapEditor;
+    if (!tiptap) return "";
+    const { from, to } = tiptap.state.selection;
+    if (from === to) return ""; // cursor, no selection
+    return tiptap.state.doc.textBetween(from, to, " ");
+  }, [editor]);
+
   // Register bridge functions on window
   useEffect(() => {
     window.loadDocument = loadDocument;
@@ -136,6 +165,9 @@ function App() {
     window.exportMarkdown = exportMarkdown;
     window.exportHTML = exportHTML;
     window.exportFullHTML = exportFullHTML;
+    window.insertTextAtCursor = insertTextAtCursor;
+    window.editorHasFocus = editorHasFocus;
+    window.getSelectedText = getSelectedText;
 
     // Notify Swift that the editor is ready
     window.webkit?.messageHandlers?.editorBridge?.postMessage({
@@ -148,8 +180,11 @@ function App() {
       delete window.exportMarkdown;
       delete window.exportHTML;
       delete window.exportFullHTML;
+      delete window.insertTextAtCursor;
+      delete window.editorHasFocus;
+      delete window.getSelectedText;
     };
-  }, [loadDocument, setTheme, exportMarkdown, exportHTML, exportFullHTML]);
+  }, [loadDocument, setTheme, exportMarkdown, exportHTML, exportFullHTML, insertTextAtCursor, editorHasFocus, getSelectedText]);
 
   // Detect system dark mode when not in native wrapper
   useEffect(() => {

@@ -94,7 +94,7 @@ final class VoiceCommandOverlayWindow: NSPanel {
 // MARK: - Overlay Content
 
 /// The SwiftUI content rendered inside the overlay window.
-/// Shows the waveform pill on top, live transcript text below.
+/// Shows the waveform pill on top, a mode label, and live transcript text below.
 @available(macOS 26.0, *)
 struct VoiceCommandOverlayContent: View {
     @ObservedObject var manager: VoiceCommandManager
@@ -106,7 +106,13 @@ struct VoiceCommandOverlayContent: View {
             // Waveform pill
             WaveformPillView(audioLevel: manager.audioLevel, isRecording: manager.isActive)
 
-            // Live transcript
+            // Mode indicator
+            if let mode = manager.mode {
+                modeLabel(for: mode)
+                    .transition(.opacity)
+            }
+
+            // Live transcript (shown for all modes so user can see what was captured)
             if !manager.transcript.isEmpty {
                 Text(manager.transcript)
                     .font(.system(size: 13, weight: .regular, design: .rounded))
@@ -125,6 +131,46 @@ struct VoiceCommandOverlayContent: View {
         }
         .padding(20)
         .animation(.easeInOut(duration: 0.15), value: manager.transcript.isEmpty)
+        .animation(.easeInOut(duration: 0.15), value: modeName)
+    }
+
+    private var modeName: String {
+        guard let mode = manager.mode else { return "" }
+        switch mode {
+        case .dictation: return "dictation"
+        case .aiContext: return "ai"
+        case .voiceNote: return "note"
+        }
+    }
+
+    @ViewBuilder
+    private func modeLabel(for mode: VoiceCommandMode) -> some View {
+        HStack(spacing: 5) {
+            switch mode {
+            case .dictation:
+                Image(systemName: "text.cursor")
+                    .font(.caption2)
+                Text("Dictating to note")
+                    .font(.caption2)
+            case .aiContext:
+                Image(systemName: "sparkles")
+                    .font(.caption2)
+                Text("AI command with selection")
+                    .font(.caption2)
+            case .voiceNote:
+                Image(systemName: "mic.fill")
+                    .font(.caption2)
+                Text("Voice note")
+                    .font(.caption2)
+            }
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background {
+            Capsule(style: .continuous)
+                .fill(.ultraThinMaterial)
+        }
     }
 }
 

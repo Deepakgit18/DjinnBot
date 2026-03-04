@@ -299,6 +299,43 @@ struct BlockNoteEditorView: NSViewRepresentable {
             }
         }
 
+        // MARK: - Voice Dictation (insert at cursor)
+
+        /// Insert text at the current cursor position in the editor.
+        /// Used by voice command dictation mode to stream words in.
+        func insertTextAtCursor(_ text: String) {
+            guard let webView else { return }
+            let cmd = BridgeCommandToJS.insertTextAtCursor(text: text)
+            webView.evaluateJavaScript(cmd.javaScript) { _, error in
+                if let error {
+                    print("[Dialogue] insertTextAtCursor error: \(error.localizedDescription)")
+                }
+            }
+        }
+
+        /// Checks whether the BlockNote editor currently has focus.
+        /// Calls the JS bridge function and returns the result via completion.
+        func checkEditorHasFocus(completion: @escaping (Bool) -> Void) {
+            guard let webView else {
+                completion(false)
+                return
+            }
+            webView.evaluateJavaScript("window.editorHasFocus ? window.editorHasFocus() : false") { result, _ in
+                completion((result as? Bool) ?? false)
+            }
+        }
+
+        /// Gets the currently selected text in the editor (empty string if cursor only).
+        func getSelectedText(completion: @escaping (String) -> Void) {
+            guard let webView else {
+                completion("")
+                return
+            }
+            webView.evaluateJavaScript("window.getSelectedText ? window.getSelectedText() : ''") { result, _ in
+                completion((result as? String) ?? "")
+            }
+        }
+
         /// Push the current document's content into the WebView editor.
         /// Called when the user switches to a different file.
         func loadDocumentIntoEditor() {

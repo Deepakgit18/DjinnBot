@@ -321,4 +321,5 @@ extension Notification.Name {
     static let openSpeakerProfiles = Notification.Name("dialogue.openSpeakerProfiles")
     static let activateSearch = Notification.Name("dialogue.activateSearch")
     static let activateGlobalSearch = Notification.Name("dialogue.activateGlobalSearch")
+    static let showChatPanel = Notification.Name("dialogue.showChatPanel")
 }
