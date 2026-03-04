@@ -67,6 +67,7 @@
 		PP000002 /* VoiceCommandOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000012 /* VoiceCommandOverlay.swift */; };
 		PP000003 /* LoadingIndicatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000013 /* LoadingIndicatorView.swift */; };
 		PP000005 /* VoiceCommandTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000014 /* VoiceCommandTranscriber.swift */; };
+		SS000001 /* AudioInputDeviceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = SS000011 /* AudioInputDeviceManager.swift */; };
 		RR000001 /* NoteExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR000011 /* NoteExporter.swift */; };
 		PP000004 /* LoadingIcon in Resources */ = {isa = PBXBuildFile; fileRef = PP000020 /* LoadingIcon */; };
 		QQ000001 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = QQ000011 /* AppIcon.icns */; };
@@ -130,6 +131,7 @@
 		PP000012 /* VoiceCommandOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandOverlay.swift; sourceTree = "<group>"; };
 		PP000013 /* LoadingIndicatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoadingIndicatorView.swift; sourceTree = "<group>"; };
 		PP000014 /* VoiceCommandTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandTranscriber.swift; sourceTree = "<group>"; };
+		SS000011 /* AudioInputDeviceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioInputDeviceManager.swift; sourceTree = "<group>"; };
 		RR000011 /* NoteExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteExporter.swift; sourceTree = "<group>"; };
 		PP000020 /* LoadingIcon */ = {isa = PBXFileReference; lastKnownFileType = folder; path = LoadingIcon; sourceTree = "<group>"; };
 		QQ000011 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
@@ -330,6 +332,7 @@
 			isa = PBXGroup;
 			children = (
 				FF00001F /* AudioConverter.swift */,
+				SS000011 /* AudioInputDeviceManager.swift */,
 				II000013 /* CatppuccinColors.swift */,
 			);
 			path = Utils;
@@ -504,6 +507,7 @@
 				FF00000D /* MicPipeline.swift in Sources */,
 				FF00000E /* MeetingPipeline.swift in Sources */,
 				FF00000F /* AudioConverter.swift in Sources */,
+				SS000001 /* AudioInputDeviceManager.swift in Sources */,
 				GG000001 /* MeetingStore.swift in Sources */,
 				GG000002 /* MeetingDetailView.swift in Sources */,
 				HH000001 /* ModelPreloader.swift in Sources */,

@@ -3,11 +3,15 @@ import SwiftUI
 /// Sheet for enrolling a new speaker voice via 3 recording clips.
 ///
 /// Flow:
-/// 1. User enters a name.
+/// 1. User enters a name and selects a microphone.
 /// 2. For each of 3 clips, a reading prompt is displayed.
 /// 3. User presses "Start Recording", reads the prompt aloud (~10 seconds).
 /// 4. User presses "Stop" — clip is stored.
 /// 5. After 3 clips, presses "Save" to enroll via VoiceID.
+///
+/// The level meter shows live mic input at all times — before, during, and
+/// after recording. If no audio input is detected during recording, a warning
+/// appears and the recording auto-stops with actionable troubleshooting tips.
 @available(macOS 26.0, *)
 struct VoiceEnrollmentSheet: View {
 
@@ -43,6 +47,12 @@ struct VoiceEnrollmentSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 300)
 
+            // Microphone picker + live level
+            VStack(spacing: 8) {
+                microphonePicker
+                levelMeter(level: manager.peakLevel)
+            }
+
             // Color picker
             VStack(spacing: 4) {
                 Text("Speaker Color")
@@ -70,6 +80,9 @@ struct VoiceEnrollmentSheet: View {
 
                 case .recording(let duration):
                     recordingState(duration: duration)
+
+                case .silenceDetected:
+                    silenceDetectedState
 
                 case .processing:
                     ProgressView("Extracting voice profile...")
@@ -112,12 +125,42 @@ struct VoiceEnrollmentSheet: View {
             }
         }
         .padding(24)
-        .frame(width: 440)
+        .frame(width: 480)
         .task {
             await manager.prepare()
         }
         .onDisappear {
             manager.cleanup()
+        }
+    }
+
+    // MARK: - Microphone Picker
+
+    private var microphonePicker: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "mic.fill")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+
+            Picker("Microphone", selection: $manager.selectedDevice) {
+                Text("System Default")
+                    .tag(nil as AudioInputDeviceManager.InputDevice?)
+                ForEach(manager.availableDevices) { device in
+                    Text(device.name)
+                        .tag(device as AudioInputDeviceManager.InputDevice?)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 280)
+
+            Button {
+                manager.refreshDevices()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .help("Refresh device list")
         }
     }
 
@@ -196,8 +239,6 @@ struct VoiceEnrollmentSheet: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            levelMeter(level: 0)
-
             Button {
                 manager.startRecording()
             } label: {
@@ -229,7 +270,23 @@ struct VoiceEnrollmentSheet: View {
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            levelMeter(level: manager.peakLevel)
+            // Silence warning banner (shown before auto-stop)
+            if manager.silenceWarningActive {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                    Text("No audio input detected from microphone")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.orange.opacity(0.1))
+                        .strokeBorder(Color.orange.opacity(0.3), lineWidth: 1)
+                )
+            }
 
             HStack(spacing: 12) {
                 Circle()
@@ -243,11 +300,15 @@ struct VoiceEnrollmentSheet: View {
                     .fontWeight(.medium)
             }
 
-            // Duration guidance
-            if duration < manager.minimumDuration {
-                Text("Keep speaking... (\(Int(manager.minimumDuration - duration))s more needed)")
+            // Duration guidance — context-aware
+            if manager.silenceWarningActive {
+                Text("Stopping automatically if silence continues...")
                     .font(.caption)
                     .foregroundStyle(.orange)
+            } else if duration < manager.minimumDuration {
+                Text("Keep speaking... (\(Int(manager.minimumDuration - duration))s more needed)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else if duration < manager.recommendedDuration {
                 Text("Good! A bit more for best accuracy...")
                     .font(.caption)
@@ -268,6 +329,82 @@ struct VoiceEnrollmentSheet: View {
             .buttonStyle(.borderedProminent)
             .tint(.red)
             .disabled(duration < manager.minimumDuration)
+        }
+    }
+
+    // MARK: - Silence Detected State
+
+    private var silenceDetectedState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "mic.slash.fill")
+                .font(.system(size: 36))
+                .foregroundStyle(.orange)
+
+            Text("No Audio Input Detected")
+                .font(.headline)
+
+            Text("The recording was stopped because no audio was received from the microphone.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+
+            // Troubleshooting suggestions
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Try the following:")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+
+                troubleshootingItem(
+                    icon: "speaker.wave.2.fill",
+                    text: "Select a different microphone above and check the level meter responds"
+                )
+                troubleshootingItem(
+                    icon: "gear",
+                    text: "Open System Settings > Sound > Input and verify the mic is active"
+                )
+                troubleshootingItem(
+                    icon: "lock.shield.fill",
+                    text: "Check System Settings > Privacy & Security > Microphone — ensure Dialogue has access"
+                )
+                troubleshootingItem(
+                    icon: "cable.connector",
+                    text: "If using an external mic, check the cable or USB connection"
+                )
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.primary.opacity(0.03))
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                manager.startRecording()
+            } label: {
+                Label("Try Again", systemImage: "arrow.counterclockwise")
+            }
+            .buttonStyle(.borderedProminent)
+
+            Button("Open Sound Settings") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+        }
+    }
+
+    private func troubleshootingItem(icon: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
