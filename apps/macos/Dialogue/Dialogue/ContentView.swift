@@ -247,6 +247,9 @@ struct ContentView: View {
                                     },
                                     onPrevious: {
                                         BlockNoteEditorView.Coordinator.current?.findPrevious()
+                                    },
+                                    onDismiss: {
+                                        BlockNoteEditorView.Coordinator.current?.clearFind()
                                     }
                                 )
                                 .padding(.trailing, 16)

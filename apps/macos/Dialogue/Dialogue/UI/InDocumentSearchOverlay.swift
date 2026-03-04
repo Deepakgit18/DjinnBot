@@ -88,6 +88,9 @@ struct InDocumentSearchBar: View {
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
 
+    /// Called when the search bar is dismissed (Escape or close button).
+    var onDismiss: (() -> Void)?
+
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
@@ -141,7 +144,7 @@ struct InDocumentSearchBar: View {
 
             // Close button
             Button {
-                search.dismiss()
+                dismissSearch()
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .medium))
@@ -169,9 +172,30 @@ struct InDocumentSearchBar: View {
                 }
             }
         }
-        .onKeyPress(.escape) {
-            search.dismiss()
-            return .handled
+        .onAppear {
+            // Monitor Escape key globally while this bar is visible.
+            // .onKeyPress(.escape) only works if the SwiftUI view has focus,
+            // but focus may be in the NSTextField or the WKWebView.
+            escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if event.keyCode == 53 { // Escape
+                    dismissSearch()
+                    return nil // consume the event
+                }
+                return event
+            }
         }
+        .onDisappear {
+            if let monitor = escapeMonitor {
+                NSEvent.removeMonitor(monitor)
+                escapeMonitor = nil
+            }
+        }
+    }
+
+    @State private var escapeMonitor: Any?
+
+    private func dismissSearch() {
+        search.dismiss()
+        onDismiss?()
     }
 }

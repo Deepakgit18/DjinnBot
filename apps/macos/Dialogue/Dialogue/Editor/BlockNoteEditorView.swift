@@ -104,8 +104,37 @@ struct BlockNoteEditorView: NSViewRepresentable {
         private var isEditorReady = false
 
         // MARK: - In-Document Find
+        //
+        // Uses the CSS Custom Highlight API (supported in WebKit/Safari 17.2+).
+        // This creates visual highlights via Range objects WITHOUT modifying the
+        // DOM, which is critical because ProseMirror (BlockNote's engine) owns
+        // the DOM and reverts any direct modifications on re-render.
 
-        /// Perform a find-in-page search. Highlights all matches in the WebView.
+        /// Inject the CSS rule for `::highlight()` once when the editor is ready.
+        func injectFindHighlightCSS() {
+            guard let webView else { return }
+            let css = """
+            (function() {
+                if (document.getElementById('dialogue-find-css')) return;
+                var style = document.createElement('style');
+                style.id = 'dialogue-find-css';
+                style.textContent = `
+                    ::highlight(dialogue-find) {
+                        background-color: rgba(255, 200, 0, 0.4);
+                        color: inherit;
+                    }
+                    ::highlight(dialogue-find-current) {
+                        background-color: rgba(255, 140, 0, 0.7);
+                        color: inherit;
+                    }
+                `;
+                document.head.appendChild(style);
+            })()
+            """
+            webView.evaluateJavaScript(css)
+        }
+
+        /// Perform a find-in-page search using the CSS Custom Highlight API.
         func findInPage(_ query: String) {
             guard let webView else { return }
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -113,128 +142,161 @@ struct BlockNoteEditorView: NSViewRepresentable {
                 clearFind()
                 return
             }
-            // Use CSS + JS custom highlight approach for robust counting.
-            // Mark all matches with a <mark> tag, count them, and scroll to current.
             let escaped = trimmed
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "'", with: "\\'")
                 .replacingOccurrences(of: "\n", with: "\\n")
             let js = """
             (function() {
-                // Remove previous highlights by unwrapping mark elements
-                document.querySelectorAll('mark[data-dialogue-find]').forEach(function(m) {
-                    var parent = m.parentNode;
-                    while (m.firstChild) parent.insertBefore(m.firstChild, m);
-                    parent.removeChild(m);
-                    parent.normalize();
-                });
+                CSS.highlights.delete('dialogue-find');
+                CSS.highlights.delete('dialogue-find-current');
+
                 var query = '\(escaped)'.toLowerCase();
-                if (!query) return JSON.stringify({count: 0});
-                // Find the editor content area (ProseMirror or fallback to body)
-                var root = document.querySelector('.ProseMirror') ||
-                           document.querySelector('.bn-editor') ||
-                           document.querySelector('[contenteditable]') ||
-                           document.body;
+                if (!query) return JSON.stringify({count: 0, idx: 0});
+
+                var root = document.querySelector('.ProseMirror')
+                        || document.querySelector('.bn-editor')
+                        || document.querySelector('[contenteditable]')
+                        || document.body;
+
                 var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
-                var matches = [];
+                var ranges = [];
                 while (walker.nextNode()) {
                     var node = walker.currentNode;
                     var text = node.textContent.toLowerCase();
                     var idx = 0;
                     while ((idx = text.indexOf(query, idx)) !== -1) {
-                        matches.push({node: node, idx: idx});
+                        var range = new Range();
+                        range.setStart(node, idx);
+                        range.setEnd(node, idx + query.length);
+                        ranges.push(range);
                         idx += query.length;
                     }
                 }
-                // Process in reverse to preserve text node offsets
-                for (var i = matches.length - 1; i >= 0; i--) {
-                    var m = matches[i];
-                    var node = m.node;
-                    var idx = m.idx;
-                    // Split: [before][match][after]
-                    var afterNode = node.splitText(idx + query.length);
-                    var matchNode = node.splitText(idx);
-                    var mark = document.createElement('mark');
-                    mark.setAttribute('data-dialogue-find', '');
-                    mark.style.backgroundColor = 'rgba(255,200,0,0.45)';
-                    mark.style.borderRadius = '2px';
-                    mark.style.padding = '1px 0';
-                    matchNode.parentNode.insertBefore(mark, matchNode);
-                    mark.appendChild(matchNode);
+
+                if (ranges.length === 0) return JSON.stringify({count: 0, idx: 0});
+
+                // Store ranges globally for prev/next navigation
+                window._dialogueFindRanges = ranges;
+                window._dialogueFindIdx = 0;
+
+                // All matches highlight
+                var highlight = new Highlight(...ranges);
+                CSS.highlights.set('dialogue-find', highlight);
+
+                // Current match highlight (first one)
+                var currentHL = new Highlight(ranges[0]);
+                CSS.highlights.set('dialogue-find-current', currentHL);
+
+                // Scroll first match into view using Range.getBoundingClientRect
+                // (no DOM mutation — safe with ProseMirror)
+                var rect = ranges[0].getBoundingClientRect();
+                var scrollEl = root.closest('.bn-container') || root.parentElement || window;
+                if (scrollEl === window) {
+                    window.scrollTo({top: rect.top + window.scrollY - window.innerHeight / 2, behavior: 'smooth'});
+                } else {
+                    scrollEl.scrollTo({top: rect.top + scrollEl.scrollTop - scrollEl.clientHeight / 2, behavior: 'smooth'});
                 }
-                var allMarks = document.querySelectorAll('mark[data-dialogue-find]');
-                if (allMarks.length > 0) {
-                    allMarks[0].style.backgroundColor = 'rgba(255,140,0,0.65)';
-                    allMarks[0].scrollIntoView({block:'center', behavior:'smooth'});
-                    document.body.setAttribute('data-find-idx', '0');
-                }
-                return JSON.stringify({count: allMarks.length});
+
+                return JSON.stringify({count: ranges.length, idx: 0});
             })()
             """
-            webView.evaluateJavaScript(js) { result, _ in
-                if let json = result as? String,
-                   let data = json.data(using: .utf8),
-                   let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let count = dict["count"] as? Int {
-                    DispatchQueue.main.async {
-                        let search = InDocumentSearch.shared
-                        // Use matchingEntryIDs as a count proxy (store dummy UUIDs)
-                        search.matchingEntryIDs = (0..<count).map { _ in UUID() }
-                        search.currentMatchIndex = 0
-                    }
+            webView.evaluateJavaScript(js) { [weak self] result, error in
+                if let err = error {
+                    print("[Dialogue] findInPage JS error: \(err.localizedDescription)")
+                }
+                guard let json = result as? String,
+                      let data = json.data(using: .utf8),
+                      let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let count = dict["count"] as? Int else { return }
+                DispatchQueue.main.async {
+                    let search = InDocumentSearch.shared
+                    search.matchingEntryIDs = (0..<count).map { _ in UUID() }
+                    search.currentMatchIndex = 0
                 }
             }
         }
 
-        /// Navigate to the next find match in the WebView.
+        /// Navigate to the next find match.
         func findNext() {
             guard let webView else { return }
             let js = """
             (function() {
-                const marks = document.querySelectorAll('mark[data-dialogue-find]');
-                if (marks.length === 0) return;
-                let cur = parseInt(document.body.getAttribute('data-find-idx') || '0');
-                marks[cur].style.backgroundColor = 'rgba(255,200,0,0.45)';
-                cur = (cur + 1) % marks.length;
-                marks[cur].style.backgroundColor = 'rgba(255,140,0,0.65)';
-                marks[cur].scrollIntoView({block:'center'});
-                document.body.setAttribute('data-find-idx', cur.toString());
+                var ranges = window._dialogueFindRanges;
+                if (!ranges || ranges.length === 0) return;
+                var idx = ((window._dialogueFindIdx || 0) + 1) % ranges.length;
+                window._dialogueFindIdx = idx;
+
+                var currentHL = new Highlight(ranges[idx]);
+                CSS.highlights.set('dialogue-find-current', currentHL);
+
+                var rect = ranges[idx].getBoundingClientRect();
+                var root = document.querySelector('.ProseMirror')
+                        || document.querySelector('[contenteditable]')
+                        || document.body;
+                var scrollEl = root.closest('.bn-container') || root.parentElement || window;
+                if (scrollEl === window) {
+                    window.scrollTo({top: rect.top + window.scrollY - window.innerHeight / 2, behavior: 'smooth'});
+                } else {
+                    scrollEl.scrollTo({top: rect.top + scrollEl.scrollTop - scrollEl.clientHeight / 2, behavior: 'smooth'});
+                }
             })()
             """
             webView.evaluateJavaScript(js)
         }
 
-        /// Navigate to the previous find match in the WebView.
+        /// Navigate to the previous find match.
         func findPrevious() {
             guard let webView else { return }
             let js = """
             (function() {
-                const marks = document.querySelectorAll('mark[data-dialogue-find]');
-                if (marks.length === 0) return;
-                let cur = parseInt(document.body.getAttribute('data-find-idx') || '0');
-                marks[cur].style.backgroundColor = 'rgba(255,200,0,0.45)';
-                cur = (cur - 1 + marks.length) % marks.length;
-                marks[cur].style.backgroundColor = 'rgba(255,140,0,0.65)';
-                marks[cur].scrollIntoView({block:'center'});
-                document.body.setAttribute('data-find-idx', cur.toString());
+                var ranges = window._dialogueFindRanges;
+                if (!ranges || ranges.length === 0) return;
+                var idx = ((window._dialogueFindIdx || 0) - 1 + ranges.length) % ranges.length;
+                window._dialogueFindIdx = idx;
+
+                var currentHL = new Highlight(ranges[idx]);
+                CSS.highlights.set('dialogue-find-current', currentHL);
+
+                var rect = ranges[idx].getBoundingClientRect();
+                var root = document.querySelector('.ProseMirror')
+                        || document.querySelector('[contenteditable]')
+                        || document.body;
+                var scrollEl = root.closest('.bn-container') || root.parentElement || window;
+                if (scrollEl === window) {
+                    window.scrollTo({top: rect.top + window.scrollY - window.innerHeight / 2, behavior: 'smooth'});
+                } else {
+                    scrollEl.scrollTo({top: rect.top + scrollEl.scrollTop - scrollEl.clientHeight / 2, behavior: 'smooth'});
+                }
             })()
             """
             webView.evaluateJavaScript(js)
         }
 
-        /// Clear all find highlights.
+        /// Clear all find highlights and force WebKit to repaint.
         func clearFind() {
             guard let webView else { return }
             let js = """
-            document.querySelectorAll('mark[data-dialogue-find]').forEach(function(m) {
-                var parent = m.parentNode;
-                while (m.firstChild) parent.insertBefore(m.firstChild, m);
-                parent.removeChild(m);
-                parent.normalize();
-            });
-            document.body.removeAttribute('data-find-idx');
+            (function() {
+                CSS.highlights.delete('dialogue-find');
+                CSS.highlights.delete('dialogue-find-current');
+                delete window._dialogueFindRanges;
+                delete window._dialogueFindIdx;
+                // Force WebKit to repaint the previously-highlighted regions.
+                // CSS Custom Highlight API removals don't always trigger
+                // an immediate compositor update.
+                var root = document.querySelector('.ProseMirror')
+                        || document.querySelector('[contenteditable]')
+                        || document.body;
+                root.style.display = 'none';
+                void root.offsetHeight;
+                root.style.display = '';
+            })()
             """
-            webView.evaluateJavaScript(js)
+            webView.evaluateJavaScript(js) { _, _ in
+                // Belt-and-suspenders: tell the NSView layer to redraw
+                webView.setNeedsDisplay(webView.bounds)
+            }
         }
 
         /// Push the current document's content into the WebView editor.
@@ -282,6 +344,9 @@ struct BlockNoteEditorView: NSViewRepresentable {
 
             // Set shared reference for in-document find
             Coordinator.current = self
+
+            // Inject CSS rules for the Custom Highlight API (find-in-page)
+            injectFindHighlightCSS()
 
             // Expose the WebView to NoteExporter for export/copy operations
             NoteExporter.shared.webView = webView
