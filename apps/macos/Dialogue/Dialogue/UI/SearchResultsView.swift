@@ -1,13 +1,16 @@
 import SwiftUI
+import AppKit
 
 // MARK: - Animated Search Bar (Toolbar)
 
 /// A magnifying glass icon that expands into a search text field when tapped.
 /// Lives in the toolbar to the left of the recording button.
+///
+/// Uses an NSViewRepresentable `NSTextField` because SwiftUI's `@FocusState`
+/// does not reliably work inside NSToolbar hosting views.
 struct ToolbarSearchBar: View {
     @Binding var isActive: Bool
     @Binding var query: String
-    @FocusState private var isFocused: Bool
     var onCommit: () -> Void
 
     var body: some View {
@@ -17,12 +20,12 @@ struct ToolbarSearchBar: View {
                     .foregroundStyle(.secondary)
                     .font(.system(size: 12))
 
-                TextField("Search notes & transcripts...", text: $query)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .focused($isFocused)
-                    .onSubmit { onCommit() }
-                    .onChange(of: query) { _, _ in onCommit() }
+                FocusableTextField(
+                    text: $query,
+                    placeholder: "Search notes & transcripts...",
+                    onCommit: onCommit
+                )
+                .frame(height: 18)
 
                 if !query.isEmpty {
                     Button {
@@ -52,10 +55,6 @@ struct ToolbarSearchBar: View {
                     withAnimation(.easeInOut(duration: 0.25)) {
                         isActive = true
                     }
-                    // Focus after the animation has started
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        isFocused = true
-                    }
                 } label: {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
@@ -64,7 +63,7 @@ struct ToolbarSearchBar: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Search (Cmd+F)")
+                .help("Search (Cmd+Shift+F)")
             }
         }
         .padding(.horizontal, isActive ? 8 : 0)
@@ -80,14 +79,73 @@ struct ToolbarSearchBar: View {
                     )
             }
         }
-        .onChange(of: isActive) { _, active in
-            if active {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    isFocused = true
-                }
-            } else {
-                isFocused = false
+    }
+}
+
+// MARK: - NSTextField wrapper that reliably grabs focus
+
+/// An `NSViewRepresentable` wrapping `NSTextField` that calls
+/// `window.makeFirstResponder()` directly, bypassing SwiftUI's broken
+/// `@FocusState` in toolbar contexts.
+private struct FocusableTextField: NSViewRepresentable {
+    @Binding var text: String
+    var placeholder: String
+    var onCommit: () -> Void
+
+    func makeNSView(context: Context) -> AutoFocusTextField {
+        let field = AutoFocusTextField()
+        field.placeholderString = placeholder
+        field.font = .systemFont(ofSize: 12)
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.lineBreakMode = .byTruncatingTail
+        field.delegate = context.coordinator
+        field.stringValue = text
+        return field
+    }
+
+    func updateNSView(_ nsView: AutoFocusTextField, context: Context) {
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    class Coordinator: NSObject, NSTextFieldDelegate {
+        let parent: FocusableTextField
+
+        init(parent: FocusableTextField) {
+            self.parent = parent
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            parent.text = field.stringValue
+            parent.onCommit()
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                parent.onCommit()
+                return true
             }
+            return false
+        }
+    }
+}
+
+/// NSTextField subclass that grabs first responder when moved to a window.
+private class AutoFocusTextField: NSTextField {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        // Delay slightly so the field is fully in the responder chain
+        DispatchQueue.main.async { [weak self] in
+            self?.window?.makeFirstResponder(self)
         }
     }
 }

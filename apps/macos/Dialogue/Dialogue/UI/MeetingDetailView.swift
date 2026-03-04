@@ -54,6 +54,9 @@ struct MeetingDetailView: View {
     /// Full-document editing sheet.
     @State private var showDocumentEdit = false
 
+    /// In-document find (Cmd+F).
+    @ObservedObject private var inDocSearch = InDocumentSearch.shared
+
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
@@ -65,6 +68,18 @@ struct MeetingDetailView: View {
                 if hasRecording {
                     transportBar
                     Divider()
+                }
+
+                // In-document find bar — sits between transport bar and transcript
+                if inDocSearch.isActive {
+                    HStack {
+                        Spacer()
+                        InDocumentSearchBar(search: inDocSearch) { newQuery in
+                            inDocSearch.updateTranscriptMatches(entries: entries)
+                        }
+                        .padding(.trailing, 12)
+                    }
+                    .padding(.vertical, 6)
                 }
 
                 // Transcript content
@@ -90,7 +105,11 @@ struct MeetingDetailView: View {
         .frame(minWidth: 500, minHeight: 400)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { loadTranscript() }
-        .onDisappear { player.stop() }
+        .onDisappear {
+            player.stop()
+            // Dismiss in-doc search when leaving this view
+            if inDocSearch.isActive { inDocSearch.dismiss() }
+        }
         .onChange(of: refinementProgress.state) { _, newState in
             if case .complete = newState {
                 loadTranscript()
@@ -269,9 +288,7 @@ struct MeetingDetailView: View {
                         )
                         .id(entry.id)
                         .background(
-                            entry.id == highlightEntryID
-                                ? Color.yellow.opacity(0.15)
-                                : Color.clear
+                            backgroundForEntry(entry)
                         )
                     }
                 }
@@ -280,7 +297,6 @@ struct MeetingDetailView: View {
             }
             .onAppear {
                 if let targetID = highlightEntryID {
-                    // Delay slightly to let LazyVStack populate
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         withAnimation {
                             proxy.scrollTo(targetID, anchor: .center)
@@ -288,7 +304,42 @@ struct MeetingDetailView: View {
                     }
                 }
             }
+            .onChange(of: inDocSearch.currentMatchIndex) { _, _ in
+                if let matchID = inDocSearch.currentMatchID {
+                    withAnimation {
+                        proxy.scrollTo(matchID, anchor: .center)
+                    }
+                }
+            }
+            .onChange(of: inDocSearch.matchingEntryIDs) { _, newIDs in
+                // Scroll to first match when results change
+                if let first = newIDs.first {
+                    withAnimation {
+                        proxy.scrollTo(first, anchor: .center)
+                    }
+                }
+            }
         }
+    }
+
+    // MARK: - Entry Background
+
+    /// Returns the appropriate background color for a transcript row:
+    /// - Current in-document search match: orange highlight
+    /// - Other in-document search matches: yellow highlight
+    /// - Global search highlight: yellow highlight
+    /// - Default: clear
+    private func backgroundForEntry(_ entry: TranscriptEntry) -> Color {
+        if inDocSearch.isActive && inDocSearch.currentMatchID == entry.id {
+            return Color.orange.opacity(0.25)
+        }
+        if inDocSearch.isActive && inDocSearch.matchingEntryIDs.contains(entry.id) {
+            return Color.yellow.opacity(0.12)
+        }
+        if entry.id == highlightEntryID {
+            return Color.yellow.opacity(0.15)
+        }
+        return Color.clear
     }
 
     // MARK: - Enrollment Sheet

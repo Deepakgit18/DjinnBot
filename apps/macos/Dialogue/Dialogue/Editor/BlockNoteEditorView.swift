@@ -91,6 +91,9 @@ struct BlockNoteEditorView: NSViewRepresentable {
     // MARK: - Coordinator
 
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        /// Shared reference so other views can call find methods.
+        static weak var current: Coordinator?
+
         weak var document: BlockNoteDocument?
         weak var webView: WKWebView?
         
@@ -99,6 +102,140 @@ struct BlockNoteEditorView: NSViewRepresentable {
         private var autosaveTimer: Timer?
         private var pendingAutosave = false
         private var isEditorReady = false
+
+        // MARK: - In-Document Find
+
+        /// Perform a find-in-page search. Highlights all matches in the WebView.
+        func findInPage(_ query: String) {
+            guard let webView else { return }
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                clearFind()
+                return
+            }
+            // Use CSS + JS custom highlight approach for robust counting.
+            // Mark all matches with a <mark> tag, count them, and scroll to current.
+            let escaped = trimmed
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+                .replacingOccurrences(of: "\n", with: "\\n")
+            let js = """
+            (function() {
+                // Remove previous highlights by unwrapping mark elements
+                document.querySelectorAll('mark[data-dialogue-find]').forEach(function(m) {
+                    var parent = m.parentNode;
+                    while (m.firstChild) parent.insertBefore(m.firstChild, m);
+                    parent.removeChild(m);
+                    parent.normalize();
+                });
+                var query = '\(escaped)'.toLowerCase();
+                if (!query) return JSON.stringify({count: 0});
+                // Find the editor content area (ProseMirror or fallback to body)
+                var root = document.querySelector('.ProseMirror') ||
+                           document.querySelector('.bn-editor') ||
+                           document.querySelector('[contenteditable]') ||
+                           document.body;
+                var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+                var matches = [];
+                while (walker.nextNode()) {
+                    var node = walker.currentNode;
+                    var text = node.textContent.toLowerCase();
+                    var idx = 0;
+                    while ((idx = text.indexOf(query, idx)) !== -1) {
+                        matches.push({node: node, idx: idx});
+                        idx += query.length;
+                    }
+                }
+                // Process in reverse to preserve text node offsets
+                for (var i = matches.length - 1; i >= 0; i--) {
+                    var m = matches[i];
+                    var node = m.node;
+                    var idx = m.idx;
+                    // Split: [before][match][after]
+                    var afterNode = node.splitText(idx + query.length);
+                    var matchNode = node.splitText(idx);
+                    var mark = document.createElement('mark');
+                    mark.setAttribute('data-dialogue-find', '');
+                    mark.style.backgroundColor = 'rgba(255,200,0,0.45)';
+                    mark.style.borderRadius = '2px';
+                    mark.style.padding = '1px 0';
+                    matchNode.parentNode.insertBefore(mark, matchNode);
+                    mark.appendChild(matchNode);
+                }
+                var allMarks = document.querySelectorAll('mark[data-dialogue-find]');
+                if (allMarks.length > 0) {
+                    allMarks[0].style.backgroundColor = 'rgba(255,140,0,0.65)';
+                    allMarks[0].scrollIntoView({block:'center', behavior:'smooth'});
+                    document.body.setAttribute('data-find-idx', '0');
+                }
+                return JSON.stringify({count: allMarks.length});
+            })()
+            """
+            webView.evaluateJavaScript(js) { result, _ in
+                if let json = result as? String,
+                   let data = json.data(using: .utf8),
+                   let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let count = dict["count"] as? Int {
+                    DispatchQueue.main.async {
+                        let search = InDocumentSearch.shared
+                        // Use matchingEntryIDs as a count proxy (store dummy UUIDs)
+                        search.matchingEntryIDs = (0..<count).map { _ in UUID() }
+                        search.currentMatchIndex = 0
+                    }
+                }
+            }
+        }
+
+        /// Navigate to the next find match in the WebView.
+        func findNext() {
+            guard let webView else { return }
+            let js = """
+            (function() {
+                const marks = document.querySelectorAll('mark[data-dialogue-find]');
+                if (marks.length === 0) return;
+                let cur = parseInt(document.body.getAttribute('data-find-idx') || '0');
+                marks[cur].style.backgroundColor = 'rgba(255,200,0,0.45)';
+                cur = (cur + 1) % marks.length;
+                marks[cur].style.backgroundColor = 'rgba(255,140,0,0.65)';
+                marks[cur].scrollIntoView({block:'center'});
+                document.body.setAttribute('data-find-idx', cur.toString());
+            })()
+            """
+            webView.evaluateJavaScript(js)
+        }
+
+        /// Navigate to the previous find match in the WebView.
+        func findPrevious() {
+            guard let webView else { return }
+            let js = """
+            (function() {
+                const marks = document.querySelectorAll('mark[data-dialogue-find]');
+                if (marks.length === 0) return;
+                let cur = parseInt(document.body.getAttribute('data-find-idx') || '0');
+                marks[cur].style.backgroundColor = 'rgba(255,200,0,0.45)';
+                cur = (cur - 1 + marks.length) % marks.length;
+                marks[cur].style.backgroundColor = 'rgba(255,140,0,0.65)';
+                marks[cur].scrollIntoView({block:'center'});
+                document.body.setAttribute('data-find-idx', cur.toString());
+            })()
+            """
+            webView.evaluateJavaScript(js)
+        }
+
+        /// Clear all find highlights.
+        func clearFind() {
+            guard let webView else { return }
+            let js = """
+            document.querySelectorAll('mark[data-dialogue-find]').forEach(function(m) {
+                var parent = m.parentNode;
+                while (m.firstChild) parent.insertBefore(m.firstChild, m);
+                parent.removeChild(m);
+                parent.normalize();
+            });
+            document.body.removeAttribute('data-find-idx');
+            """
+            webView.evaluateJavaScript(js)
+        }
 
         /// Push the current document's content into the WebView editor.
         /// Called when the user switches to a different file.
@@ -142,6 +279,9 @@ struct BlockNoteEditorView: NSViewRepresentable {
         private func onEditorReady() {
             isEditorReady = true
             guard let webView = webView else { return }
+
+            // Set shared reference for in-document find
+            Coordinator.current = self
 
             // Expose the WebView to NoteExporter for export/copy operations
             NoteExporter.shared.webView = webView

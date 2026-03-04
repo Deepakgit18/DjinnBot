@@ -41,6 +41,9 @@ struct ContentView: View {
     /// Search engine instance.
     @ObservedObject private var searchEngine = SearchEngine.shared
 
+    /// In-document find state (Cmd+F when a note or transcript is open).
+    @ObservedObject private var inDocSearch = InDocumentSearch.shared
+
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
@@ -48,15 +51,19 @@ struct ContentView: View {
                     SidebarView(
                         documentManager: documentManager,
                         onSelectDocument: { url in
+                            inDocSearch.dismiss()
                             appState.openDocument(at: url)
                         },
                         onSelectHome: {
+                            inDocSearch.dismiss()
                             appState.navigateHome()
                         },
                         onSelectMeetingRecorder: {
+                            inDocSearch.dismiss()
                             appState.navigateHome()
                         },
                         onSelectMeeting: { meeting in
+                            inDocSearch.dismiss()
                             appState.openMeeting(meeting)
                         },
                         onDeleteMeeting: { meeting in
@@ -185,6 +192,9 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .activateSearch)) { _ in
+            handleCmdF()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .activateGlobalSearch)) { _ in
             withAnimation(.easeInOut(duration: 0.25)) {
                 isSearchActive = true
             }
@@ -219,8 +229,39 @@ struct ContentView: View {
                 HomeView()
                     .frame(minWidth: 500, minHeight: 400)
             case .editor:
-                BlockNoteEditorView(document: appState.currentDocument)
-                    .frame(minWidth: 500, minHeight: 400)
+                ZStack {
+                    BlockNoteEditorView(document: appState.currentDocument)
+                        .frame(minWidth: 500, minHeight: 400)
+
+                    if inDocSearch.isActive {
+                        VStack {
+                            HStack {
+                                Spacer()
+                                InDocumentSearchBar(
+                                    search: inDocSearch,
+                                    onQueryChanged: { newQuery in
+                                        BlockNoteEditorView.Coordinator.current?.findInPage(newQuery)
+                                    },
+                                    onNext: {
+                                        BlockNoteEditorView.Coordinator.current?.findNext()
+                                    },
+                                    onPrevious: {
+                                        BlockNoteEditorView.Coordinator.current?.findPrevious()
+                                    }
+                                )
+                                .padding(.trailing, 16)
+                                .padding(.top, 8)
+                            }
+                            Spacer()
+                        }
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .onChange(of: inDocSearch.isActive) { _, active in
+                    if !active {
+                        BlockNoteEditorView.Coordinator.current?.clearFind()
+                    }
+                }
             case .meetingRecorder:
                 HomeView()
                     .frame(minWidth: 500, minHeight: 400)
@@ -250,6 +291,25 @@ struct ContentView: View {
     }
     
     // MARK: - Search
+
+    /// Routes Cmd+F based on what's currently open.
+    private func handleCmdF() {
+        switch appState.activeScreen {
+        case .editor, .meetingDetail, .meetingDetailHighlight:
+            // Open in-document search overlay
+            if inDocSearch.isActive {
+                // Toggle off
+                inDocSearch.dismiss()
+            } else {
+                inDocSearch.activate()
+            }
+        default:
+            // No document open — activate the global toolbar search bar
+            withAnimation(.easeInOut(duration: 0.25)) {
+                isSearchActive = true
+            }
+        }
+    }
 
     private func performSearch() {
         let trimmed = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)

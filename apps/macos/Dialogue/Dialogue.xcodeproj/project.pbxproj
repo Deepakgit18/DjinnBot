@@ -66,6 +66,7 @@
 		UU00000C /* FuzzyMatch in Frameworks */ = {isa = PBXBuildFile; productRef = UU000082 /* FuzzyMatch */; };
 		UU000001 /* SearchEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = UU000011 /* SearchEngine.swift */; };
 		UU000002 /* SearchResultsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = UU000012 /* SearchResultsView.swift */; };
+		UU000003 /* InDocumentSearchOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = UU000013 /* InDocumentSearchOverlay.swift */; };
 		PP000001 /* VoiceCommandManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000011 /* VoiceCommandManager.swift */; };
 		PP000002 /* VoiceCommandOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000012 /* VoiceCommandOverlay.swift */; };
 		PP000003 /* LoadingIndicatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000013 /* LoadingIndicatorView.swift */; };
@@ -144,6 +145,7 @@
 		QQ000011 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		UU000011 /* SearchEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchEngine.swift; sourceTree = "<group>"; };
 		UU000012 /* SearchResultsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchResultsView.swift; sourceTree = "<group>"; };
+		UU000013 /* InDocumentSearchOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InDocumentSearchOverlay.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -263,6 +265,7 @@
 				JJ000014 /* VoiceEnrollmentSheet.swift */,
 				TT000012 /* TranscriptDocumentEditView.swift */,
 				UU000012 /* SearchResultsView.swift */,
+				UU000013 /* InDocumentSearchOverlay.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
@@ -546,6 +549,7 @@
 				RR000001 /* NoteExporter.swift in Sources */,
 				UU000001 /* SearchEngine.swift in Sources */,
 				UU000002 /* SearchResultsView.swift in Sources */,
+				UU000003 /* InDocumentSearchOverlay.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

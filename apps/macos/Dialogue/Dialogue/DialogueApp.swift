@@ -76,8 +76,13 @@ struct DialogueApp: App {
             }
 
             CommandGroup(after: .textEditing) {
-                Button("Find in All Documents") {
+                Button("Find") {
                     NotificationCenter.default.post(name: .activateSearch, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: .command)
+
+                Button("Find in All Documents") {
+                    NotificationCenter.default.post(name: .activateGlobalSearch, object: nil)
                 }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
             }
@@ -302,4 +307,5 @@ extension Notification.Name {
     static let toggleRecording = Notification.Name("dialogue.toggleRecording")
     static let openSpeakerProfiles = Notification.Name("dialogue.openSpeakerProfiles")
     static let activateSearch = Notification.Name("dialogue.activateSearch")
+    static let activateGlobalSearch = Notification.Name("dialogue.activateGlobalSearch")
 }
