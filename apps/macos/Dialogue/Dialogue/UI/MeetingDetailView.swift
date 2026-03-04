@@ -12,6 +12,8 @@ import SFBAudioEngine
 /// text editing, and inline split & reassign.
 struct MeetingDetailView: View {
     let meeting: SavedMeeting
+    /// Optional entry ID to scroll to and highlight (from search navigation).
+    var highlightEntryID: UUID? = nil
     @State private var entries: [TranscriptEntry] = []
     @State private var loadError: String?
     @StateObject private var player = MeetingPlayer()
@@ -232,42 +234,60 @@ struct MeetingDetailView: View {
     }
 
     private var transcriptList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 2) {
-                ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                    MeetingTranscriptRow(
-                        entry: entry,
-                        player: player,
-                        recordingURL: meeting.recordingURL,
-                        hasRecording: hasRecording,
-                        enrolledVoices: VoiceID.shared.allEnrolledVoices(),
-                        callSpeakers: callSpeakers,
-                        onEnroll: { e in
-                            selectedEntry = e
-                            enrollName = ""
-                            enrollColorIndex = nil
-                            showEnrollSheet = true
-                        },
-                        onReassign: { _, userID in
-                            reassignEntry(at: index, to: userID)
-                        },
-                        onReassignAll: { e, userID in
-                            reassignAllEntries(from: e.speaker, to: userID)
-                        },
-                        onEnhance: { e, userID in
-                            Task { await enhanceVoice(entry: e, userID: userID) }
-                        },
-                        onEdit: { e in
-                            editingEntry = e
-                        },
-                        onSplitReassign: { e, range, speaker in
-                            splitEntry(entryID: e.id, range: range, newSpeaker: speaker)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                        MeetingTranscriptRow(
+                            entry: entry,
+                            player: player,
+                            recordingURL: meeting.recordingURL,
+                            hasRecording: hasRecording,
+                            enrolledVoices: VoiceID.shared.allEnrolledVoices(),
+                            callSpeakers: callSpeakers,
+                            onEnroll: { e in
+                                selectedEntry = e
+                                enrollName = ""
+                                enrollColorIndex = nil
+                                showEnrollSheet = true
+                            },
+                            onReassign: { _, userID in
+                                reassignEntry(at: index, to: userID)
+                            },
+                            onReassignAll: { e, userID in
+                                reassignAllEntries(from: e.speaker, to: userID)
+                            },
+                            onEnhance: { e, userID in
+                                Task { await enhanceVoice(entry: e, userID: userID) }
+                            },
+                            onEdit: { e in
+                                editingEntry = e
+                            },
+                            onSplitReassign: { e, range, speaker in
+                                splitEntry(entryID: e.id, range: range, newSpeaker: speaker)
+                            }
+                        )
+                        .id(entry.id)
+                        .background(
+                            entry.id == highlightEntryID
+                                ? Color.yellow.opacity(0.15)
+                                : Color.clear
+                        )
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+            .onAppear {
+                if let targetID = highlightEntryID {
+                    // Delay slightly to let LazyVStack populate
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        withAnimation {
+                            proxy.scrollTo(targetID, anchor: .center)
                         }
-                    )
+                    }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
         }
     }
 

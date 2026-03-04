@@ -63,6 +63,9 @@
 		NN000001 /* MeetingPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN000011 /* MeetingPlayer.swift */; };
 		PP00000C /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = PP000082 /* KeyboardShortcuts */; };
 		QQ00000C /* MenuBarExtraAccess in Frameworks */ = {isa = PBXBuildFile; productRef = QQ000082 /* MenuBarExtraAccess */; };
+		UU00000C /* FuzzyMatch in Frameworks */ = {isa = PBXBuildFile; productRef = UU000082 /* FuzzyMatch */; };
+		UU000001 /* SearchEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = UU000011 /* SearchEngine.swift */; };
+		UU000002 /* SearchResultsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = UU000012 /* SearchResultsView.swift */; };
 		PP000001 /* VoiceCommandManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000011 /* VoiceCommandManager.swift */; };
 		PP000002 /* VoiceCommandOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000012 /* VoiceCommandOverlay.swift */; };
 		PP000003 /* LoadingIndicatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000013 /* LoadingIndicatorView.swift */; };
@@ -139,6 +142,8 @@
 		RR000011 /* NoteExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteExporter.swift; sourceTree = "<group>"; };
 		PP000020 /* LoadingIcon */ = {isa = PBXFileReference; lastKnownFileType = folder; path = LoadingIcon; sourceTree = "<group>"; };
 		QQ000011 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
+		UU000011 /* SearchEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchEngine.swift; sourceTree = "<group>"; };
+		UU000012 /* SearchResultsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchResultsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -152,6 +157,7 @@
 				MM00000C /* SFBAudioEngine in Frameworks */,
 				PP00000C /* KeyboardShortcuts in Frameworks */,
 				QQ00000C /* MenuBarExtraAccess in Frameworks */,
+				UU00000C /* FuzzyMatch in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -239,6 +245,7 @@
 				BB000016 /* DocumentManager.swift */,
 				GG000011 /* MeetingStore.swift */,
 				TT000011 /* TranscriptDocumentEditor.swift */,
+				UU000011 /* SearchEngine.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -255,6 +262,7 @@
 				JJ000013 /* SpeakerProfilesView.swift */,
 				JJ000014 /* VoiceEnrollmentSheet.swift */,
 				TT000012 /* TranscriptDocumentEditView.swift */,
+				UU000012 /* SearchResultsView.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
@@ -386,6 +394,7 @@
 				MM000082 /* SFBAudioEngine */,
 				PP000082 /* KeyboardShortcuts */,
 				QQ000082 /* MenuBarExtraAccess */,
+				UU000082 /* FuzzyMatch */,
 			);
 			productName = Dialogue;
 			productReference = AA000010 /* Dialogue.app */;
@@ -421,6 +430,7 @@
 				MM000071 /* XCRemoteSwiftPackageReference "SFBAudioEngine" */,
 				PP000071 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */,
 				QQ000071 /* XCRemoteSwiftPackageReference "MenuBarExtraAccess" */,
+				UU000071 /* XCRemoteSwiftPackageReference "FuzzyMatch" */,
 			);
 			productRefGroup = AA000032 /* Products */;
 			projectDirPath = "";
@@ -534,6 +544,8 @@
 				PP000003 /* LoadingIndicatorView.swift in Sources */,
 				PP000005 /* VoiceCommandTranscriber.swift in Sources */,
 				RR000001 /* NoteExporter.swift in Sources */,
+				UU000001 /* SearchEngine.swift in Sources */,
+				UU000002 /* SearchResultsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -795,6 +807,14 @@
 				minimumVersion = 2.0.0;
 			};
 		};
+		UU000071 /* XCRemoteSwiftPackageReference "FuzzyMatch" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ordo-one/FuzzyMatch.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -822,6 +842,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = PP000071 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */;
 			productName = KeyboardShortcuts;
+		};
+		UU000082 /* FuzzyMatch */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = UU000071 /* XCRemoteSwiftPackageReference "FuzzyMatch" */;
+			productName = FuzzyMatch;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

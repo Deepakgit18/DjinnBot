@@ -30,6 +30,17 @@ struct ContentView: View {
     /// Whether the floating chat toolbar is visible.
     @State private var chatToolbarVisible = false
 
+    // MARK: - Search State
+
+    /// Whether the toolbar search bar is expanded.
+    @State private var isSearchActive = false
+    /// Current search query text.
+    @State private var searchQuery = ""
+    /// Cached search results (persisted while navigating away).
+    @State private var searchResults: [SearchResult] = []
+    /// Search engine instance.
+    @ObservedObject private var searchEngine = SearchEngine.shared
+
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
@@ -79,6 +90,13 @@ struct ContentView: View {
                 }
                 .navigationSplitViewStyle(.balanced)
                 .toolbar {
+                    ToolbarItem(placement: .automatic) {
+                        ToolbarSearchBar(
+                            isActive: $isSearchActive,
+                            query: $searchQuery,
+                            onCommit: performSearch
+                        )
+                    }
                     ToolbarItem(placement: .primaryAction) {
                         if #available(macOS 26.0, *),
                            let recorder = recorderHolder.recorder {
@@ -166,6 +184,11 @@ struct ContentView: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .activateSearch)) { _ in
+            withAnimation(.easeInOut(duration: 0.25)) {
+                isSearchActive = true
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .openSpeakerProfiles)) { _ in
             // Speaker Profiles are now in the main Settings window.
             if #available(macOS 14.0, *) {
@@ -180,25 +203,86 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detailContent: some View {
-        switch appState.activeScreen {
-        case .home:
-            HomeView()
+        VStack(spacing: 0) {
+            // Back to search banner — shown when navigating from a search result
+            if appState.lastSearchQuery != nil && !appState.activeScreen.isSearchResults {
+                if let q = appState.lastSearchQuery {
+                    BackToSearchBanner(query: q) {
+                        appState.returnToSearch()
+                    }
+                    Divider()
+                }
+            }
+
+            switch appState.activeScreen {
+            case .home:
+                HomeView()
+                    .frame(minWidth: 500, minHeight: 400)
+            case .editor:
+                BlockNoteEditorView(document: appState.currentDocument)
+                    .frame(minWidth: 500, minHeight: 400)
+            case .meetingRecorder:
+                HomeView()
+                    .frame(minWidth: 500, minHeight: 400)
+                    .onAppear { appState.navigateHome() }
+            case .meetingDetail(let meeting):
+                MeetingDetailView(meeting: meeting)
+                    .id(meeting.id)
+                    .frame(minWidth: 500, minHeight: 400)
+            case .meetingDetailHighlight(let meeting, let entryID):
+                MeetingDetailView(meeting: meeting, highlightEntryID: entryID)
+                    .id("\(meeting.id)-\(entryID)")
+                    .frame(minWidth: 500, minHeight: 400)
+            case .searchResults:
+                SearchResultsView(
+                    results: searchResults,
+                    query: searchQuery,
+                    onSelectNote: { url in
+                        appState.openDocumentFromSearch(at: url)
+                    },
+                    onSelectTranscript: { meeting, entryID in
+                        appState.openMeetingHighlight(meeting, entryID: entryID)
+                    }
+                )
                 .frame(minWidth: 500, minHeight: 400)
-        case .editor:
-            BlockNoteEditorView(document: appState.currentDocument)
-                .frame(minWidth: 500, minHeight: 400)
-        case .meetingRecorder:
-            // Legacy: redirect to home (recording now lives in the toolbar)
-            HomeView()
-                .frame(minWidth: 500, minHeight: 400)
-                .onAppear { appState.navigateHome() }
-        case .meetingDetail(let meeting):
-            MeetingDetailView(meeting: meeting)
-                .id(meeting.id)
-                .frame(minWidth: 500, minHeight: 400)
+            }
         }
     }
     
+    // MARK: - Search
+
+    private func performSearch() {
+        let trimmed = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            searchResults = []
+            appState.lastSearchQuery = nil
+            // If on search results with empty query, go home
+            if appState.activeScreen.isSearchResults {
+                appState.navigateHome()
+            }
+            return
+        }
+
+        // Reindex every time we search (fast enough for local data)
+        searchEngine.reindex()
+        searchResults = searchEngine.search(trimmed)
+        appState.lastSearchQuery = trimmed
+        appState.showSearchResults()
+    }
+
+    /// Dismiss search bar and clear search state when user explicitly closes.
+    private func dismissSearch() {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            isSearchActive = false
+        }
+        searchQuery = ""
+        searchResults = []
+        appState.lastSearchQuery = nil
+        if appState.activeScreen.isSearchResults {
+            appState.navigateHome()
+        }
+    }
+
     // MARK: - Phase 3: Chat Toggle
     
     private func toggleChatToolbar() {

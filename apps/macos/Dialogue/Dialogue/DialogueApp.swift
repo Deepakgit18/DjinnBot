@@ -75,6 +75,13 @@ struct DialogueApp: App {
                 .keyboardShortcut("s", modifiers: .command)
             }
 
+            CommandGroup(after: .textEditing) {
+                Button("Find in All Documents") {
+                    NotificationCenter.default.post(name: .activateSearch, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+            }
+
             CommandMenu("Meeting") {
                 Button("Toggle Recording") {
                     NotificationCenter.default.post(name: .toggleRecording, object: nil)
@@ -182,6 +189,8 @@ final class AppState: ObservableObject {
         case editor
         case meetingRecorder
         case meetingDetail(SavedMeeting)
+        case meetingDetailHighlight(SavedMeeting, UUID)
+        case searchResults
 
         var isHome: Bool {
             if case .home = self { return true }
@@ -191,9 +200,16 @@ final class AppState: ObservableObject {
             if case .editor = self { return true }
             return false
         }
+        var isSearchResults: Bool {
+            if case .searchResults = self { return true }
+            return false
+        }
     }
 
     @Published var activeScreen: DetailScreen = .home
+
+    /// The last search query — used for "Back to search" navigation.
+    @Published var lastSearchQuery: String?
 
     var showHome: Bool {
         get { activeScreen.isHome }
@@ -207,17 +223,47 @@ final class AppState: ObservableObject {
 
     func navigateHome() {
         saveCurrentDocument()
+        lastSearchQuery = nil
         activeScreen = .home
     }
 
     func openMeetingRecorder() {
         saveCurrentDocument()
+        lastSearchQuery = nil
         activeScreen = .meetingRecorder
     }
 
     func openMeeting(_ meeting: SavedMeeting) {
         saveCurrentDocument()
+        lastSearchQuery = nil
         activeScreen = .meetingDetail(meeting)
+    }
+
+    /// Navigate to a meeting and highlight a specific transcript entry (from search).
+    func openMeetingHighlight(_ meeting: SavedMeeting, entryID: UUID) {
+        saveCurrentDocument()
+        // Don't clear lastSearchQuery — we want "Back to search" to appear
+        activeScreen = .meetingDetailHighlight(meeting, entryID)
+    }
+
+    func showSearchResults() {
+        saveCurrentDocument()
+        activeScreen = .searchResults
+    }
+
+    func returnToSearch() {
+        activeScreen = .searchResults
+    }
+
+    /// Navigate to a document from search — preserves lastSearchQuery for "back" nav.
+    func openDocumentFromSearch(at url: URL) {
+        saveCurrentDocument()
+        guard let data = try? Data(contentsOf: url),
+              let file = try? BlockNoteFile.fromJSON(data) else { return }
+        currentDocument = BlockNoteDocument(file: file)
+        currentFileURL = url
+        // Don't clear lastSearchQuery — we want "Back to search" to appear
+        activeScreen = .editor
     }
 
     func openDocument(at url: URL) {
@@ -255,4 +301,5 @@ extension Notification.Name {
     static let closeChatPanel = Notification.Name("dialogue.closeChatPanel")
     static let toggleRecording = Notification.Name("dialogue.toggleRecording")
     static let openSpeakerProfiles = Notification.Name("dialogue.openSpeakerProfiles")
+    static let activateSearch = Notification.Name("dialogue.activateSearch")
 }

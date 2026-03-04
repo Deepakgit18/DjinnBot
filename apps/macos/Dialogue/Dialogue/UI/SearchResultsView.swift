@@ -1,0 +1,377 @@
+import SwiftUI
+
+// MARK: - Animated Search Bar (Toolbar)
+
+/// A magnifying glass icon that expands into a search text field when tapped.
+/// Lives in the toolbar to the left of the recording button.
+struct ToolbarSearchBar: View {
+    @Binding var isActive: Bool
+    @Binding var query: String
+    @FocusState private var isFocused: Bool
+    var onCommit: () -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if isActive {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12))
+
+                TextField("Search notes & transcripts...", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .focused($isFocused)
+                    .onSubmit { onCommit() }
+                    .onChange(of: query) { _, _ in onCommit() }
+
+                if !query.isEmpty {
+                    Button {
+                        query = ""
+                        onCommit()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
+                            .font(.system(size: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        isActive = false
+                        query = ""
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        isActive = true
+                    }
+                    // Focus after the animation has started
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        isFocused = true
+                    }
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                        .font(.system(size: 13))
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Search (Cmd+F)")
+            }
+        }
+        .padding(.horizontal, isActive ? 8 : 0)
+        .padding(.vertical, isActive ? 4 : 0)
+        .frame(width: isActive ? 240 : 20)
+        .background {
+            if isActive {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
+                    )
+            }
+        }
+        .onChange(of: isActive) { _, active in
+            if active {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    isFocused = true
+                }
+            } else {
+                isFocused = false
+            }
+        }
+    }
+}
+
+// MARK: - Search Results View (Detail Pane)
+
+/// Displays search results grouped by type (notes, transcripts) with clear visual distinction.
+struct SearchResultsView: View {
+    let results: [SearchResult]
+    let query: String
+    var onSelectNote: (URL) -> Void
+    var onSelectTranscript: (SavedMeeting, UUID) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                Text("Results for \"\(query)\"")
+                    .font(.headline)
+                Spacer()
+                Text("\(results.count) found")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            if results.isEmpty {
+                emptyState
+            } else {
+                resultsList
+            }
+        }
+    }
+
+    // MARK: - Empty State
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 40))
+                .foregroundStyle(.tertiary)
+            Text("No results found")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+            Text("Try different keywords or check spelling")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Results List
+
+    private var resultsList: some View {
+        let noteResults = results.filter {
+            if case .note = $0.kind { return true }
+            return false
+        }
+        let transcriptResults = results.filter {
+            if case .transcript = $0.kind { return true }
+            return false
+        }
+
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if !noteResults.isEmpty {
+                    sectionHeader("Notes", count: noteResults.count, icon: "doc.text")
+                    ForEach(noteResults) { result in
+                        NoteResultRow(result: result) {
+                            if case .note(let url) = result.kind {
+                                onSelectNote(url)
+                            }
+                        }
+                    }
+                }
+
+                if !transcriptResults.isEmpty {
+                    if !noteResults.isEmpty {
+                        Divider().padding(.vertical, 8)
+                    }
+                    sectionHeader("Meeting Transcripts", count: transcriptResults.count, icon: "text.bubble")
+                    ForEach(transcriptResults) { result in
+                        TranscriptResultRow(result: result) {
+                            if case .transcript(let meeting, let entryID) = result.kind {
+                                onSelectTranscript(meeting, entryID)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func sectionHeader(_ title: String, count: Int, icon: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+                .font(.caption)
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text("(\(count))")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+    }
+}
+
+// MARK: - Note Result Row
+
+private struct NoteResultRow: View {
+    let result: SearchResult
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 10) {
+                // Type badge
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.blue.opacity(0.12))
+                    Image(systemName: "doc.text")
+                        .foregroundStyle(.blue)
+                        .font(.system(size: 12))
+                }
+                .frame(width: 28, height: 28)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(result.title)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                        .foregroundStyle(.primary)
+
+                    if !result.snippet.isEmpty {
+                        Text(result.snippet)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    HStack(spacing: 8) {
+                        Text("Note")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.blue)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 3))
+
+                        Text(result.date, style: .relative)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                Spacer()
+
+                // Score indicator
+                scoreIndicator(result.score)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(Color.primary.opacity(0.001)) // Ensure hit testing
+    }
+}
+
+// MARK: - Transcript Result Row
+
+private struct TranscriptResultRow: View {
+    let result: SearchResult
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 10) {
+                // Type badge
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.orange.opacity(0.12))
+                    Image(systemName: "text.bubble")
+                        .foregroundStyle(.orange)
+                        .font(.system(size: 12))
+                }
+                .frame(width: 28, height: 28)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(result.title)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                        .foregroundStyle(.primary)
+
+                    if !result.snippet.isEmpty {
+                        Text(result.snippet)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    HStack(spacing: 8) {
+                        Text("Transcript")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 3))
+
+                        Text(result.date, style: .relative)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                Spacer()
+
+                // Score indicator
+                scoreIndicator(result.score)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(Color.primary.opacity(0.001))
+    }
+}
+
+// MARK: - Score Indicator
+
+private func scoreIndicator(_ score: Double) -> some View {
+    let bars: Int
+    if score >= 0.9 { bars = 4 }
+    else if score >= 0.7 { bars = 3 }
+    else if score >= 0.5 { bars = 2 }
+    else { bars = 1 }
+
+    let activeColor = Color.blue
+    let inactiveColor = Color.primary.opacity(0.1)
+
+    return HStack(spacing: 1.5) {
+        ForEach(0..<4, id: \.self) { i in
+            RoundedRectangle(cornerRadius: 1)
+                .fill(i < bars ? activeColor : inactiveColor)
+                .frame(width: 3, height: CGFloat(6 + i * 2))
+        }
+    }
+    .frame(width: 20)
+    .help(String(format: "Match: %.0f%%", score * 100))
+}
+
+// MARK: - Back to Search Banner
+
+/// A thin banner shown below the title bar when navigating from a search result.
+/// Allows the user to return to their search results without re-typing.
+struct BackToSearchBanner: View {
+    let query: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.left")
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.blue)
+            Text("Back to search results for \"\(query)\"")
+                .font(.caption)
+                .foregroundColor(.blue)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial)
+        .contentShape(Rectangle())
+        .onTapGesture { action() }
+    }
+}
