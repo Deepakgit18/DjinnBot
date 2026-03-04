@@ -53,8 +53,11 @@ struct ContentView: View {
     @ObservedObject private var permissions = PermissionManager.shared
 
     /// Whether the permission onboarding screen is shown.
-    /// Starts `true` and flips to `false` once all required permissions are confirmed.
-    @State private var showPermissionOnboarding = true
+    /// Starts hidden — the `.task` check decides whether to show it.
+    @State private var showPermissionOnboarding = false
+
+    /// Prevents the main content from loading before the permission check completes.
+    @State private var permissionCheckDone = false
 
     var body: some View {
         ZStack {
@@ -195,10 +198,15 @@ struct ContentView: View {
             }
         }
         .task {
-            // Check permissions on launch — skip onboarding if already granted.
+            // Check permissions on launch.
             await permissions.refreshAll()
             if permissions.allRequiredGranted {
-                showPermissionOnboarding = false
+                // All good — skip onboarding entirely.
+                permissionCheckDone = true
+            } else {
+                // Show onboarding to walk the user through granting permissions.
+                showPermissionOnboarding = true
+                permissionCheckDone = true
             }
         }
         // Phase 3: Chat panel keyboard shortcuts

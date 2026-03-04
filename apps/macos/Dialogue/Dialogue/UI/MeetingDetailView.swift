@@ -66,6 +66,18 @@ struct MeetingDetailView: View {
     @Environment(\.undoManager) private var undoManager
     @StateObject private var undoHelper = TranscriptUndoHelper()
 
+    // MARK: - Tab State
+
+    enum MeetingTab: String, CaseIterable {
+        case transcript = "Transcript"
+        case summary = "Summary"
+    }
+
+    @State private var activeTab: MeetingTab = .transcript
+
+    /// Ingest service for sending transcript to Dialogue AI.
+    @StateObject private var ingestService = MeetingIngestService()
+
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
@@ -73,14 +85,20 @@ struct MeetingDetailView: View {
                 header
                 Divider()
 
-                // Transport controls — use dynamic file check, not stale snapshot
+                // Tab bar + ingest button
+                tabBar
+                Divider()
+
+                // Transport controls — always visible when recording exists
+                // (don't toggle on tab switch — that changes VStack height and
+                // causes LazyVStack row height cache to be invalidated).
                 if hasRecording {
                     transportBar
                     Divider()
                 }
 
-                // In-document find bar — sits between transport bar and transcript
-                if inDocSearch.isActive {
+                // In-document find bar
+                if inDocSearch.isActive && activeTab == .transcript {
                     HStack {
                         Spacer()
                         InDocumentSearchBar(search: inDocSearch) { newQuery in
@@ -91,13 +109,19 @@ struct MeetingDetailView: View {
                     .padding(.vertical, 6)
                 }
 
-                // Transcript content
+                // Transcript — ALWAYS in the view hierarchy as a direct child
+                // of this VStack so it gets the correct remaining-height
+                // proposal. The summary is overlaid on top when that tab is
+                // active, so the transcript's LazyVStack is never destroyed.
                 if let error = loadError {
                     errorView(error)
+                        .overlay { summaryOverlay }
                 } else if entries.isEmpty {
                     emptyView
+                        .overlay { summaryOverlay }
                 } else {
                     transcriptList
+                        .overlay { summaryOverlay }
                 }
             }
 
@@ -116,6 +140,7 @@ struct MeetingDetailView: View {
         .onAppear {
             loadTranscript()
             undoHelper.liveEntries = entries
+            ingestService.loadState(for: meeting)
         }
         .onDisappear {
             player.stop()
@@ -125,6 +150,17 @@ struct MeetingDetailView: View {
         .onChange(of: refinementProgress.state) { _, newState in
             if case .complete = newState {
                 loadTranscript()
+                ingestService.loadState(for: meeting)
+            }
+        }
+        // Auto-switch to Summary tab only when summary was just generated
+        // during the current ingest pipeline (state transitions to .complete).
+        // Don't auto-switch on initial load for already-ingested meetings.
+        .onChange(of: ingestService.state) { _, newState in
+            if newState == .complete {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    activeTab = .summary
+                }
             }
         }
         // Undo/redo restore: when the helper signals a restore, apply it.
@@ -169,6 +205,198 @@ struct MeetingDetailView: View {
                 }
             )
         }
+    }
+
+    // MARK: - Tab Bar
+
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            // Tab picker
+            HStack(spacing: 0) {
+                ForEach(MeetingTab.allCases, id: \.self) { tab in
+                    let isActive = activeTab == tab
+                    let isDisabled = tab == .summary && !ingestService.hasSummary
+                        && ingestService.state != .summarizing
+                        && ingestService.state != .complete
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            activeTab = tab
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            if tab == .summary {
+                                Image(systemName: ingestService.hasSummary ? "doc.richtext" : "doc.richtext")
+                                    .font(.caption2)
+                            }
+                            Text(tab.rawValue)
+                                .font(.subheadline)
+                                .fontWeight(isActive ? .semibold : .regular)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            isActive
+                                ? Color.accentColor.opacity(0.12)
+                                : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 6)
+                        )
+                        .foregroundStyle(isActive ? .primary : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isDisabled)
+                    .opacity(isDisabled ? 0.4 : 1.0)
+                }
+            }
+            .padding(.leading, 16)
+
+            Spacer()
+
+            // Ingest button / status area
+            ingestStatusArea
+                .padding(.trailing, 16)
+        }
+        .padding(.vertical, 8)
+    }
+
+    // MARK: - Ingest Status Area
+
+    /// Shows the ingest button, progress, or completion state.
+    /// Every phase has clear visual feedback so the user never wonders what's happening.
+    @ViewBuilder
+    private var ingestStatusArea: some View {
+        switch ingestService.state {
+        case .idle:
+            if ingestService.isIngested {
+                // Already ingested — show green checkmark
+                if ingestService.hasSummary {
+                    Label("Meeting Ingested", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                } else {
+                    // Ingested but no summary yet (edge case: ingest succeeded, summary failed)
+                    HStack(spacing: 6) {
+                        Label("Ingested", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                        Button("Retry Summary") {
+                            ingestService.ingestAndSummarize(meeting: meeting, entries: entries)
+                        }
+                        .font(.caption)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+            } else if !entries.isEmpty {
+                // Not yet ingested — show the action button
+                Button {
+                    ingestService.ingestAndSummarize(meeting: meeting, entries: entries)
+                } label: {
+                    Label("Send to Dialogue AI", systemImage: "brain")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Ingest this meeting's transcript for knowledge extraction and generate a summary")
+            }
+
+        case .ingesting:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(ingestService.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+        case .summarizing:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(ingestService.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+        case .complete:
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text(ingestService.statusMessage.isEmpty ? "Summary ready" : ingestService.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
+
+        case .failed:
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .font(.caption)
+                Text(ingestService.errorMessage ?? "Failed")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Button("Retry") {
+                    ingestService.ingestAndSummarize(meeting: meeting, entries: entries)
+                }
+                .font(.caption)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+    }
+
+    // MARK: - Summary Overlay
+
+    /// Overlays the summary view on top of the transcript content area.
+    /// The transcript stays alive underneath — its LazyVStack is never
+    /// destroyed, so cached row heights remain valid.
+    @ViewBuilder
+    private var summaryOverlay: some View {
+        if activeTab == .summary {
+            if ingestService.hasSummary {
+                MeetingSummaryView(meeting: meeting)
+                    .background(Color(nsColor: .windowBackgroundColor))
+            } else {
+                summaryPlaceholder
+                    .background(Color(nsColor: .windowBackgroundColor))
+            }
+        }
+    }
+
+    // MARK: - Summary Placeholder
+
+    /// Shown when the Summary tab is selected but no summary exists yet.
+    private var summaryPlaceholder: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "doc.richtext")
+                .font(.system(size: 48))
+                .foregroundStyle(.quaternary)
+            Text("No Summary Yet")
+                .font(.title2)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+            Text("Send the transcript to Dialogue AI to generate a meeting summary with key points, decisions, and action items.")
+                .font(.subheadline)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 380)
+
+            if !entries.isEmpty && !ingestService.isIngested {
+                Button {
+                    ingestService.ingestAndSummarize(meeting: meeting, entries: entries)
+                } label: {
+                    Label("Send to Dialogue AI", systemImage: "brain")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Header
@@ -521,9 +749,6 @@ struct MeetingDetailView: View {
     // MARK: - Loading
 
     private func loadTranscript() {
-        // Clear the height cache — different meeting, different text widths.
-        SegmentHeightCache.shared.clear()
-
         guard meeting.hasTranscript else {
             entries = []
             undoHelper.liveEntries = entries
@@ -957,29 +1182,6 @@ private struct EditSegmentSheet: View {
 
 // MARK: - Height Cache
 
-/// Shared cache of calculated text heights keyed by entry ID.
-/// Persists across LazyVStack view creation/destruction so rows start at the
-/// correct height immediately instead of jumping from the 16px default.
-/// This eliminates cascading layout instability during scroll.
-private final class SegmentHeightCache {
-    static let shared = SegmentHeightCache()
-    private var cache: [UUID: CGFloat] = [:]
-    private init() {}
-
-    func height(for id: UUID) -> CGFloat {
-        cache[id] ?? 16
-    }
-
-    func setHeight(_ height: CGFloat, for id: UUID) {
-        cache[id] = height
-    }
-
-    /// Clear the cache (e.g. when switching meetings).
-    func clear() {
-        cache.removeAll()
-    }
-}
-
 // MARK: - Segment NSTextView
 
 /// Custom NSTextView subclass that overrides the right-click context menu.
@@ -987,45 +1189,21 @@ private final class SegmentHeightCache {
 /// (nil if nothing is selected) and must return the complete menu.
 private class SegmentNSTextView: NSTextView {
     var buildContextMenu: ((NSRange?) -> NSMenu)?
-    var heightDidChange: ((CGFloat) -> Void)?
-
-    /// Tracks the last width used for height calculation to avoid redundant layout.
-    private var lastLayoutWidth: CGFloat = -1
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let range = selectedRange()
         return buildContextMenu?(range.length > 0 ? range : nil) ?? super.menu(for: event)
     }
 
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        textContainer?.containerSize = NSSize(width: newSize.width, height: .greatestFiniteMagnitude)
-        // Only recalculate height if the width actually changed — avoids a
-        // feedback loop where height change → frame change → recalculate → height change.
-        if abs(newSize.width - lastLayoutWidth) > 0.5 {
-            lastLayoutWidth = newSize.width
-            recalculateHeight()
-        }
-    }
-
-    override func didChangeText() {
-        super.didChangeText()
-        lastLayoutWidth = -1 // force recalculation on text change
-        recalculateHeight()
-    }
-
-    /// Force a height recalculation (called after programmatic text assignment).
-    func forceRecalculateHeight() {
-        lastLayoutWidth = textContainer?.containerSize.width ?? -1
-        recalculateHeight()
-    }
-
-    private func recalculateHeight() {
-        guard let container = textContainer, let lm = layoutManager else { return }
+    /// Calculate the required height for a given container width.
+    /// Used by `SegmentTextView.sizeThatFits` to tell SwiftUI the correct
+    /// size in a single layout pass — no feedback loops, no caching.
+    func heightForWidth(_ width: CGFloat) -> CGFloat {
+        guard let container = textContainer, let lm = layoutManager else { return 16 }
+        container.containerSize = NSSize(width: max(width, 1), height: .greatestFiniteMagnitude)
         lm.ensureLayout(for: container)
         let usedRect = lm.usedRect(for: container)
-        let newHeight = max(ceil(usedRect.height), 16)
-        heightDidChange?(newHeight)
+        return max(ceil(usedRect.height), 16)
     }
 }
 
@@ -1035,10 +1213,13 @@ private class SegmentNSTextView: NSTextView {
 /// editable. Right-clicking anywhere on the text shows our full custom context
 /// menu. When text is selected, an additional "Reassign Selected to >" submenu
 /// appears at the top — enabling inline split & reassign without any sheet.
+///
+/// Height is calculated via `sizeThatFits(_:nsView:context:)` — SwiftUI calls
+/// this during layout with the proposed width, we calculate the text height for
+/// that width, and return it. One pass, no feedback loop, no caching.
 private struct SegmentTextView: NSViewRepresentable {
     let entryID: UUID
     let text: String
-    @Binding var height: CGFloat
 
     // Data needed to build the context menu
     let enrolledVoices: [VoiceEmbedding]
@@ -1077,26 +1258,24 @@ private struct SegmentTextView: NSViewRepresentable {
         tv.buildContextMenu = { [weak coordinator] range in
             coordinator?.buildMenu(selectedRange: range) ?? NSMenu()
         }
-        tv.heightDidChange = { [weak coordinator] newHeight in
-            coordinator?.updateHeight(newHeight)
-        }
 
         return tv
     }
 
     func updateNSView(_ tv: SegmentNSTextView, context: Context) {
-        // Keep coordinator in sync with latest parent values
         context.coordinator.parent = self
 
         if tv.string != text {
             tv.string = text
-            // Reset height counter since content changed — allow fresh convergence.
-            context.coordinator.resetHeightCounter()
-            // Programmatic string assignment doesn't trigger didChangeText(),
-            // so the height callback never fires. Force a layout + recalc.
-            tv.invalidateIntrinsicContentSize()
-            tv.forceRecalculateHeight()
         }
+    }
+
+    /// SwiftUI calls this during layout to ask how big we want to be.
+    /// We calculate the text height for the proposed width in one shot.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: SegmentNSTextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? 200
+        let height = nsView.heightForWidth(width)
+        return CGSize(width: width, height: height)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -1107,10 +1286,6 @@ private struct SegmentTextView: NSViewRepresentable {
 
     class Coordinator: NSObject {
         var parent: SegmentTextView
-
-        /// Prevents runaway height update cycles. Reset when text changes.
-        private var heightUpdateCount = 0
-        private static let maxHeightUpdates = 3
 
         init(parent: SegmentTextView) {
             self.parent = parent
@@ -1135,26 +1310,6 @@ private struct SegmentTextView: NSViewRepresentable {
         }
 
         /// Reset the height update counter (called when text changes).
-        func resetHeightCounter() {
-            heightUpdateCount = 0
-        }
-
-        func updateHeight(_ newHeight: CGFloat) {
-            // Require meaningful height change (>1px) to avoid sub-pixel oscillation.
-            guard abs(newHeight - parent.height) > 1.0 else { return }
-            // Cap the number of height update cycles to prevent infinite loops
-            // caused by layout oscillation (e.g. scrollbar show/hide changing width).
-            guard heightUpdateCount < Coordinator.maxHeightUpdates else { return }
-            heightUpdateCount += 1
-            // Write to the shared cache so that if this row scrolls off screen
-            // and back on, the LazyVStack creates it at the correct height
-            // immediately — no layout jump.
-            SegmentHeightCache.shared.setHeight(newHeight, for: parent.entryID)
-            DispatchQueue.main.async {
-                self.parent.height = newHeight
-            }
-        }
-
         func buildMenu(selectedRange: NSRange?) -> NSMenu {
             let menu = NSMenu()
             let p = parent
@@ -1329,40 +1484,6 @@ private struct MeetingTranscriptRow: View {
     let onEdit: (TranscriptEntry) -> Void
     let onSplitReassign: (TranscriptEntry, NSRange, String) -> Void
 
-    /// Start at the cached height (if any) to avoid layout jumps in LazyVStack.
-    @State private var textHeight: CGFloat
-
-    init(
-        entry: TranscriptEntry,
-        player: MeetingPlayer,
-        recordingURL: URL,
-        hasRecording: Bool,
-        enrolledVoices: [VoiceEmbedding],
-        callSpeakers: [String],
-        onEnroll: @escaping (TranscriptEntry) -> Void,
-        onReassign: @escaping (TranscriptEntry, String) -> Void,
-        onReassignAll: @escaping (TranscriptEntry, String) -> Void,
-        onEnhance: @escaping (TranscriptEntry, String) -> Void,
-        onEdit: @escaping (TranscriptEntry) -> Void,
-        onSplitReassign: @escaping (TranscriptEntry, NSRange, String) -> Void
-    ) {
-        self.entry = entry
-        self._player = ObservedObject(wrappedValue: player)
-        self.recordingURL = recordingURL
-        self.hasRecording = hasRecording
-        self.enrolledVoices = enrolledVoices
-        self.callSpeakers = callSpeakers
-        self.onEnroll = onEnroll
-        self.onReassign = onReassign
-        self.onReassignAll = onReassignAll
-        self.onEnhance = onEnhance
-        self.onEdit = onEdit
-        self.onSplitReassign = onSplitReassign
-        // Initialize @State from the shared height cache so LazyVStack rows
-        // don't jump from 16px → real height on every scroll.
-        self._textHeight = State(initialValue: SegmentHeightCache.shared.height(for: entry.id))
-    }
-
     private var isActiveSegment: Bool {
         player.isPlaying &&
         player.currentTime >= entry.start &&
@@ -1391,11 +1512,12 @@ private struct MeetingTranscriptRow: View {
                 .foregroundStyle(CatppuccinSpeaker.labelColor(for: entry.speaker))
                 .padding(.top, 1)
 
-            // Text — custom NSTextView with full context menu
+            // Text — custom NSTextView with full context menu.
+            // Height is calculated by sizeThatFits() during layout — no
+            // manual height binding or caching needed.
             SegmentTextView(
                 entryID: entry.id,
                 text: entry.text,
-                height: $textHeight,
                 enrolledVoices: enrolledVoices,
                 callSpeakers: callSpeakers,
                 currentSpeaker: entry.speaker,
@@ -1408,7 +1530,6 @@ private struct MeetingTranscriptRow: View {
                 onEnhance: { userID in onEnhance(entry, userID) },
                 onSplitReassign: { range, speaker in onSplitReassign(entry, range, speaker) }
             )
-            .frame(height: max(textHeight, 16))
 
             Spacer(minLength: 0)
         }

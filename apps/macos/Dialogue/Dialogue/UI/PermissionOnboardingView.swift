@@ -4,8 +4,14 @@ import SwiftUI
 /// permissions are missing). Walks the user through granting microphone and
 /// screen recording access, with an optional accessibility step.
 ///
-/// The view auto-refreshes permission statuses when the app regains focus
-/// (e.g. after the user toggles a switch in System Settings).
+/// **When all permissions are already granted** the view plays a quick
+/// staggered check-mark animation (each card checks in sequence) then
+/// auto-dismisses — giving the user visual confirmation without a jarring flash.
+///
+/// **When some permissions are missing** the view stops at the first
+/// un-granted required permission and waits for the user to grant it.
+/// The view auto-refreshes when the app regains focus (e.g. after
+/// toggling a switch in System Settings).
 struct PermissionOnboardingView: View {
     @ObservedObject private var permissions = PermissionManager.shared
 
@@ -14,6 +20,20 @@ struct PermissionOnboardingView: View {
 
     /// Tracks which step the user is on (0-based).
     @State private var currentStep = 0
+
+    /// Controls the initial staggered reveal of permission statuses.
+    /// Each element flips from `.unknown` to the real status after a delay,
+    /// creating a sequential check-in animation on launch.
+    @State private var revealedStatuses: [PermissionManager.Status] = [.unknown, .unknown, .unknown]
+
+    /// Whether the initial permission check sequence has finished.
+    @State private var initialCheckDone = false
+
+    /// Whether the header content has appeared (for entrance animation).
+    @State private var headerVisible = false
+
+    /// Per-card appearance flag for staggered entrance.
+    @State private var cardVisible: [Bool] = [false, false, false]
 
     private let steps: [PermissionStep] = [
         PermissionStep(
@@ -58,6 +78,8 @@ struct PermissionOnboardingView: View {
                     .font(.body)
                     .foregroundStyle(.secondary)
             }
+            .opacity(headerVisible ? 1 : 0)
+            .offset(y: headerVisible ? 0 : 10)
             .padding(.bottom, 40)
 
             // Permission cards
@@ -65,8 +87,8 @@ struct PermissionOnboardingView: View {
                 ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
                     PermissionCard(
                         step: step,
-                        status: status(for: step.permission),
-                        isCurrent: index == currentStep,
+                        status: revealedStatuses[index],
+                        isCurrent: initialCheckDone && index == currentStep,
                         onRequest: {
                             Task { await requestPermission(step.permission) }
                         },
@@ -75,6 +97,8 @@ struct PermissionOnboardingView: View {
                             permissions.openSystemSettings(for: step.permission)
                         }
                     )
+                    .opacity(cardVisible[index] ? 1 : 0)
+                    .offset(y: cardVisible[index] ? 0 : 12)
                 }
             }
             .frame(maxWidth: 500)
@@ -82,37 +106,101 @@ struct PermissionOnboardingView: View {
             Spacer()
 
             // Continue button — enabled when all required permissions are granted
-            if permissions.allRequiredGranted {
+            // and the initial check animation has finished.
+            if initialCheckDone && permissions.allRequiredGranted {
                 Button("Get Started") {
                     onComplete()
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .padding(.bottom, 32)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard initialCheckDone else { return }
             // Re-check permissions when user returns from System Settings
             Task {
                 await permissions.refreshAll()
+                syncRevealedStatuses()
                 autoAdvanceStep()
             }
         }
         .task {
-            await permissions.refreshAll()
-            autoAdvanceStep()
+            await runInitialCheckSequence()
+        }
+    }
+
+    // MARK: - Initial Check Sequence
+
+    /// Checks each permission in sequence with staggered delays,
+    /// animating each card's status reveal one at a time.
+    /// If everything is granted, auto-dismisses after the animation.
+    private func runInitialCheckSequence() async {
+        // 1. Fade in header
+        withAnimation(.easeOut(duration: 0.4)) {
+            headerVisible = true
+        }
+        try? await Task.sleep(for: .milliseconds(200))
+
+        // 2. Fetch all permissions up front (so we know the real statuses)
+        await permissions.refreshAll()
+
+        // 3. Stagger-reveal each card
+        for index in steps.indices {
+            // Fade the card in
+            withAnimation(.easeOut(duration: 0.35)) {
+                cardVisible[index] = true
+            }
+            try? await Task.sleep(for: .milliseconds(150))
+
+            // Reveal the real status with a spring animation
+            let realStatus = liveStatus(for: steps[index].permission)
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                revealedStatuses[index] = realStatus
+            }
+
+            // Pause between cards — longer if it's a checkmark (let it land)
+            let delay: Duration = realStatus == .granted ? .milliseconds(400) : .milliseconds(200)
+            try? await Task.sleep(for: delay)
+        }
+
+        // 4. Mark the initial check as done
+        initialCheckDone = true
+        autoAdvanceStep()
+
+        // 5. If everything required is already granted, auto-dismiss after a beat
+        if permissions.allRequiredGranted {
+            try? await Task.sleep(for: .milliseconds(600))
+            withAnimation(.easeInOut(duration: 0.35)) {
+                onComplete()
+            }
         }
     }
 
     // MARK: - Helpers
 
-    private func status(for permission: PermissionManager.Permission) -> PermissionManager.Status {
+    /// Returns the live permission status (not the revealed/animated one).
+    private func liveStatus(for permission: PermissionManager.Permission) -> PermissionManager.Status {
         switch permission {
         case .microphone: return permissions.microphoneStatus
         case .screenRecording: return permissions.screenRecordingStatus
         case .accessibility: return permissions.accessibilityStatus
+        }
+    }
+
+    /// Syncs revealed statuses with the live permission state (used after
+    /// returning from System Settings).
+    private func syncRevealedStatuses() {
+        for (index, step) in steps.enumerated() {
+            let live = liveStatus(for: step.permission)
+            if revealedStatuses[index] != live {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                    revealedStatuses[index] = live
+                }
+            }
         }
     }
 
@@ -126,9 +214,10 @@ struct PermissionOnboardingView: View {
             permissions.requestAccessibility()
         }
 
-        // Small delay then re-check and auto-advance
+        // Small delay then re-check and animate
         try? await Task.sleep(for: .milliseconds(300))
         await permissions.refreshAll()
+        syncRevealedStatuses()
         autoAdvanceStep()
     }
 
@@ -136,21 +225,27 @@ struct PermissionOnboardingView: View {
     /// or to accessibility if required ones are done.
     private func autoAdvanceStep() {
         for (index, step) in steps.enumerated() {
-            let s = status(for: step.permission)
+            let s = liveStatus(for: step.permission)
             if s != .granted && !step.isOptional {
-                currentStep = index
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    currentStep = index
+                }
                 return
             }
         }
         // All required are granted — point to accessibility if not granted
         if permissions.accessibilityStatus != .granted {
-            currentStep = steps.count - 1
+            withAnimation(.easeInOut(duration: 0.25)) {
+                currentStep = steps.count - 1
+            }
         }
     }
 
     private func advanceStep() {
         if currentStep < steps.count - 1 {
-            currentStep += 1
+            withAnimation(.easeInOut(duration: 0.25)) {
+                currentStep += 1
+            }
         }
     }
 }
@@ -214,61 +309,72 @@ private struct PermissionCard: View {
             Spacer()
 
             // Status / Action
-            if status == .granted {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.green)
-            } else if isCurrent {
-                VStack(spacing: 6) {
-                    if status == .denied {
-                        // Already denied — need to go to System Settings
-                        Button("Open Settings") {
-                            onOpenSettings()
-                        }
-                        .buttonStyle(.borderedProminent)
+            Group {
+                if status == .unknown {
+                    // Checking — subtle spinner
+                    ProgressView()
                         .controlSize(.small)
-                    } else {
-                        Button(step.buttonLabel) {
-                            onRequest()
+                        .transition(.opacity)
+                } else if status == .granted {
+                    // Animated checkmark
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.green)
+                        .transition(.scale.combined(with: .opacity))
+                } else if isCurrent {
+                    VStack(spacing: 6) {
+                        if status == .denied {
+                            Button("Open Settings") {
+                                onOpenSettings()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        } else {
+                            Button(step.buttonLabel) {
+                                onRequest()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                    }
 
-                    if let onSkip {
-                        Button("Skip") {
-                            onSkip()
+                        if let onSkip {
+                            Button("Skip") {
+                                onSkip()
+                            }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     }
+                    .transition(.opacity)
                 }
             }
+            .animation(.spring(response: 0.4, dampingFraction: 0.7), value: status)
         }
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(isCurrent && status != .granted
+                .fill(isCurrent && status != .granted && status != .unknown
                       ? Color.accentColor.opacity(0.06)
                       : Color(nsColor: .controlBackgroundColor))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(
-                    isCurrent && status != .granted
+                    isCurrent && status != .granted && status != .unknown
                         ? Color.accentColor.opacity(0.3)
                         : Color(nsColor: .separatorColor).opacity(0.5),
                     lineWidth: 1
                 )
         )
-        .opacity(status == .granted ? 0.7 : 1.0)
+        .animation(.easeInOut(duration: 0.25), value: isCurrent)
+        .animation(.easeInOut(duration: 0.25), value: status)
     }
 
     private var iconBackground: Color {
         if status == .granted {
             return .green.opacity(0.15)
-        } else if isCurrent {
+        } else if isCurrent && status != .unknown {
             return .accentColor.opacity(0.15)
         }
         return Color(nsColor: .controlBackgroundColor)
@@ -277,7 +383,7 @@ private struct PermissionCard: View {
     private var iconForeground: Color {
         if status == .granted {
             return .green
-        } else if isCurrent {
+        } else if isCurrent && status != .unknown {
             return .accentColor
         }
         return .secondary

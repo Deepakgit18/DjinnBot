@@ -2,6 +2,9 @@
 
 declare global {
   interface Window {
+    /** Initial theme injected by Swift before React renders, prevents flash */
+    initialTheme?: "light" | "dark";
+
     /** API key injected by Swift from Keychain (in-memory only) */
     AI_API_KEY?: string;
 
@@ -34,6 +37,9 @@ declare global {
 
     /** Called by Swift to get the currently selected text (empty if no selection) */
     getSelectedText?: () => string;
+
+    /** Called by Swift to parse markdown and load it into the editor */
+    loadMarkdown?: (markdown: string) => Promise<void>;
 
     /** Called by Swift to dispatch a streamed AI chunk */
     dispatchAIChunk?: (data: {

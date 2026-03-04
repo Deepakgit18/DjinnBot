@@ -18,34 +18,31 @@ struct BlockNoteEditorView: NSViewRepresentable {
         let controller = config.userContentController
         controller.add(context.coordinator, name: "editorBridge")
 
-        // Inject early CSS so the page body is transparent while loading,
-        // preventing a white flash when switching views in dark mode.
-        let earlyCSS = WKUserScript(
+        // 1. Inject the theme before React renders so BlockNote starts in the
+        //    correct theme on the very first frame — no light→dark flash.
+        // 2. Set html/body background to match the native window background.
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let bgColor = isDark ? "#1e1e1e" : "#ffffff"
+        let earlyTheme = WKUserScript(
             source: """
-                document.addEventListener('DOMContentLoaded', function() {
-                    var s = document.createElement('style');
-                    s.textContent = 'html, body { background: transparent !important; }';
-                    document.head.prepend(s);
-                });
-                // Also set it immediately for the current document
+                window.initialTheme = '\(isDark ? "dark" : "light")';
                 var s = document.createElement('style');
-                s.textContent = 'html, body { background: transparent !important; }';
+                s.textContent = 'html, body { background: \(bgColor) !important; }';
                 (document.head || document.documentElement).prepend(s);
                 """,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         )
-        controller.addUserScript(earlyCSS)
+        controller.addUserScript(earlyTheme)
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
-        
-        // Transparent background to match native app chrome
         webView.setValue(false, forKey: "drawsBackground")
-
-        // Prevent white flash in dark mode: the under-page color shows
-        // behind web content while the HTML/CSS is still loading.
         webView.underPageBackgroundColor = .windowBackgroundColor
+
+        // Start hidden — the coordinator will fade in once the editor is
+        // ready and themed, preventing any light-mode flash in dark mode.
+        webView.alphaValue = 0
 
         context.coordinator.document = document
         context.coordinator.webView = webView
@@ -403,6 +400,12 @@ struct BlockNoteEditorView: NSViewRepresentable {
             if let blocksJSON = document?.file.blocksJSONString() {
                 let loadCmd = BridgeCommandToJS.loadDocument(blocksJSON: blocksJSON)
                 webView.evaluateJavaScript(loadCmd.javaScript)
+            }
+
+            // Reveal the editor now that it's themed and loaded.
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.15
+                webView.animator().alphaValue = 1
             }
         }
 

@@ -26,7 +26,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import "./types";
 
 function App() {
-  const [theme, setThemeState] = useState<"light" | "dark">("light");
+  // Read initial theme from Swift-injected variable so we render with the
+  // correct theme on the very first frame — no light→dark flash.
+  const [theme, setThemeState] = useState<"light" | "dark">(
+    () => (window as any).initialTheme === "dark" ? "dark" : "light"
+  );
 
   // Build AI transport — reads the injected API key from window
   const aiTransport = useMemo(() => {
@@ -158,6 +162,17 @@ function App() {
     return tiptap.state.doc.textBetween(from, to, " ");
   }, [editor]);
 
+  // Bridge: parse markdown into blocks and load into editor.
+  // Used by the meeting summary view to display AI-generated markdown summaries.
+  const loadMarkdown = useCallback(
+    async (markdown: string) => {
+      if (!markdown) return;
+      const blocks = await editor.tryParseMarkdownToBlocks(markdown);
+      editor.replaceBlocks(editor.document, blocks);
+    },
+    [editor]
+  );
+
   // Register bridge functions on window
   useEffect(() => {
     window.loadDocument = loadDocument;
@@ -168,6 +183,7 @@ function App() {
     window.insertTextAtCursor = insertTextAtCursor;
     window.editorHasFocus = editorHasFocus;
     window.getSelectedText = getSelectedText;
+    window.loadMarkdown = loadMarkdown;
 
     // Notify Swift that the editor is ready
     window.webkit?.messageHandlers?.editorBridge?.postMessage({
@@ -183,8 +199,9 @@ function App() {
       delete window.insertTextAtCursor;
       delete window.editorHasFocus;
       delete window.getSelectedText;
+      delete window.loadMarkdown;
     };
-  }, [loadDocument, setTheme, exportMarkdown, exportHTML, exportFullHTML, insertTextAtCursor, editorHasFocus, getSelectedText]);
+  }, [loadDocument, setTheme, exportMarkdown, exportHTML, exportFullHTML, insertTextAtCursor, editorHasFocus, getSelectedText, loadMarkdown]);
 
   // Detect system dark mode when not in native wrapper
   useEffect(() => {
@@ -207,6 +224,7 @@ function App() {
     <div
       style={{
         height: "100vh",
+        overflowY: "auto" as const,
         background: theme === "dark" ? "#1e1e1e" : "#ffffff",
         color: theme === "dark" ? "#e0e0e0" : "#1a1a1a",
       }}

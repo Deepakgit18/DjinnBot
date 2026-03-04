@@ -52,6 +52,7 @@ enum BridgeCommandToJS {
     case dispatchAIChunk(requestId: String, chunk: String, done: Bool)
     case aiRequestError(requestId: String, error: String)
     case insertTextAtCursor(text: String)
+    case loadMarkdown(markdown: String)
 
     /// Generate the JavaScript string to evaluate.
     var javaScript: String {
@@ -90,6 +91,17 @@ enum BridgeCommandToJS {
                 .replacingOccurrences(of: "\n", with: "\\n")
                 .replacingOccurrences(of: "\r", with: "\\r")
             return "window.insertTextAtCursor && window.insertTextAtCursor('\(escaped)');"
+
+        case .loadMarkdown(let markdown):
+            // Escape for JS single-quoted string. The JS function is async
+            // (calls tryParseMarkdownToBlocks) so we invoke it without await —
+            // the WKWebView will handle the Promise internally.
+            let escaped = markdown
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+                .replacingOccurrences(of: "\n", with: "\\n")
+                .replacingOccurrences(of: "\r", with: "\\r")
+            return "window.loadMarkdown && window.loadMarkdown('\(escaped)');"
         }
     }
 }

@@ -443,48 +443,66 @@ final class AppUpdater: ObservableObject {
     }
 
     /// Mounts a DMG and returns the mount point path.
+    ///
+    /// Runs `hdiutil attach` off the main thread to avoid blocking the UI.
     private func mountDMG(at path: URL) async throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        process.arguments = ["attach", path.path, "-nobrowse", "-quiet", "-plist"]
+        let dmgPath = path.path
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+                process.arguments = ["attach", dmgPath, "-nobrowse", "-quiet", "-plist"]
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = Pipe()
 
-        try process.run()
-        process.waitUntilExit()
+                do {
+                    try process.run()
+                } catch {
+                    continuation.resume(throwing: UpdateError.dmgMountFailed)
+                    return
+                }
+                process.waitUntilExit()
 
-        guard process.terminationStatus == 0 else {
-            throw UpdateError.dmgMountFailed
-        }
+                guard process.terminationStatus == 0 else {
+                    continuation.resume(throwing: UpdateError.dmgMountFailed)
+                    return
+                }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
-        // Parse the plist output to find the mount point.
-        guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-              let entities = plist["system-entities"] as? [[String: Any]]
-        else {
-            throw UpdateError.dmgMountFailed
-        }
+                guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+                      let entities = plist["system-entities"] as? [[String: Any]]
+                else {
+                    continuation.resume(throwing: UpdateError.dmgMountFailed)
+                    return
+                }
 
-        for entity in entities {
-            if let mountPoint = entity["mount-point"] as? String {
-                return mountPoint
+                for entity in entities {
+                    if let mountPoint = entity["mount-point"] as? String {
+                        continuation.resume(returning: mountPoint)
+                        return
+                    }
+                }
+
+                continuation.resume(throwing: UpdateError.dmgMountFailed)
             }
         }
-
-        throw UpdateError.dmgMountFailed
     }
 
     /// Best-effort unmount. Non-throwing because we don't want unmount
     /// failures to block the update flow.
+    ///
+    /// Runs `hdiutil detach` off the main thread to avoid blocking the UI.
     private func unmountDMG(at mountPoint: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        process.arguments = ["detach", mountPoint, "-quiet"]
-        try? process.run()
-        process.waitUntilExit()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+            process.arguments = ["detach", mountPoint, "-quiet"]
+            try? process.run()
+            process.waitUntilExit()
+        }
     }
 
     // MARK: - Version Helpers

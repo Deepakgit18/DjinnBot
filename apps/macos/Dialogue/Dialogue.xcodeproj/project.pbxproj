@@ -68,6 +68,8 @@
 		UU000002 /* SearchResultsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = UU000012 /* SearchResultsView.swift */; };
 		UU000003 /* InDocumentSearchOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = UU000013 /* InDocumentSearchOverlay.swift */; };
 		UU000004 /* AppUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = UU000014 /* AppUpdater.swift */; };
+		MI000001 /* MeetingIngestService.swift in Sources */ = {isa = PBXBuildFile; fileRef = MI000011 /* MeetingIngestService.swift */; };
+		MI000002 /* MeetingSummaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = MI000012 /* MeetingSummaryView.swift */; };
 		PP000001 /* VoiceCommandManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000011 /* VoiceCommandManager.swift */; };
 		PP000002 /* VoiceCommandOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000012 /* VoiceCommandOverlay.swift */; };
 		PP000003 /* LoadingIndicatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP000013 /* LoadingIndicatorView.swift */; };
@@ -150,6 +152,8 @@
 		UU000012 /* SearchResultsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchResultsView.swift; sourceTree = "<group>"; };
 		UU000013 /* InDocumentSearchOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InDocumentSearchOverlay.swift; sourceTree = "<group>"; };
 		UU000014 /* AppUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdater.swift; sourceTree = "<group>"; };
+		MI000011 /* MeetingIngestService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingIngestService.swift; sourceTree = "<group>"; };
+		MI000012 /* MeetingSummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingSummaryView.swift; sourceTree = "<group>"; };
 		VV000011 /* PermissionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionManager.swift; sourceTree = "<group>"; };
 		VV000012 /* PermissionOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionOnboardingView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -255,6 +259,7 @@
 				TT000011 /* TranscriptDocumentEditor.swift */,
 				UU000011 /* SearchEngine.swift */,
 				UU000014 /* AppUpdater.swift */,
+				MI000011 /* MeetingIngestService.swift */,
 				VV000011 /* PermissionManager.swift */,
 			);
 			path = Services;
@@ -274,6 +279,7 @@
 				TT000012 /* TranscriptDocumentEditView.swift */,
 				UU000012 /* SearchResultsView.swift */,
 				UU000013 /* InDocumentSearchOverlay.swift */,
+				MI000012 /* MeetingSummaryView.swift */,
 				VV000012 /* PermissionOnboardingView.swift */,
 			);
 			path = UI;
@@ -561,6 +567,8 @@
 				UU000002 /* SearchResultsView.swift in Sources */,
 				UU000003 /* InDocumentSearchOverlay.swift in Sources */,
 				UU000004 /* AppUpdater.swift in Sources */,
+				MI000001 /* MeetingIngestService.swift in Sources */,
+				MI000002 /* MeetingSummaryView.swift in Sources */,
 				VV000001 /* PermissionManager.swift in Sources */,
 				VV000002 /* PermissionOnboardingView.swift in Sources */,
 			);
