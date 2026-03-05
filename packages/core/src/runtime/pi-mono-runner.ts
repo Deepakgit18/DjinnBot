@@ -6,7 +6,7 @@ import type { AgentEvent, AgentTool, AgentToolResult } from '@mariozechner/pi-ag
 import type { AgentRunner, RunAgentOptions, AgentRunResult } from './agent-executor.js';
 import { createDjinnBotTools } from './djinnbot-tools.js';
 import type { DjinnBotToolCallbacks } from './djinnbot-tools.js';
-import { createPulseTools } from './pulse-tools.js';
+import { createPulseTools, createGitPulseTools } from './pulse-tools.js';
 import { createMcpTools } from '../mcp/mcp-tools.js';
 import { performResearch } from './research.js';
 import { createReadTool, createWriteTool, createEditTool, createBashTool } from '@mariozechner/pi-coding-agent';
@@ -384,7 +384,14 @@ export class PiMonoRunner implements AgentRunner {
     if (isPulseSession) {
       const pulseTools = createPulseTools(options.agentId, options.pulseColumns);
       tools.push(...pulseTools);
-      console.log(`[PiMonoRunner] Added pulse tools for agent ${options.agentId} (columns: ${(options.pulseColumns || []).join(', ') || 'default'})`);
+
+      // Always add git pulse tools (claim_task, open_pull_request, get_task_branch,
+      // get_task_pr_status) for pulse sessions. If the project doesn't have git,
+      // these tools will return clean API errors — no harm done.
+      const gitPulseTools = createGitPulseTools(options.agentId);
+      tools.push(...gitPulseTools);
+
+      console.log(`[PiMonoRunner] Added pulse tools for agent ${options.agentId} (columns: ${(options.pulseColumns || []).join(', ') || 'default'}, git tools: ${gitPulseTools.map(t => t.name).join(', ')})`);
     }
 
     // Add native MCP tools for any server granted to this agent.

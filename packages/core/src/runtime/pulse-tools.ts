@@ -45,6 +45,26 @@ const ExecuteTaskParamsSchema = Type.Object({
 });
 type ExecuteTaskParams = Static<typeof ExecuteTaskParamsSchema>;
 
+const SpawnExecutorParamsSchema = Type.Object({
+  projectId: Type.String({
+    description: 'Project ID containing the task',
+  }),
+  taskId: Type.String({
+    description: 'Task ID to spawn an executor for',
+  }),
+  additionalInstructions: Type.Optional(
+    Type.String({
+      description: 'Optional extra instructions to append to the task description for the executor',
+    })
+  ),
+  timeoutSeconds: Type.Optional(
+    Type.Number({
+      description: 'Max execution time in seconds (default 300, max 600)',
+    })
+  ),
+});
+type SpawnExecutorParams = Static<typeof SpawnExecutorParamsSchema>;
+
 // Simple void details for our tools
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface VoidDetails {}
@@ -297,12 +317,14 @@ export function createPulseTools(
       },
     },
 
-    // execute_task tool
+    // execute_pipeline tool (triggers a multi-step pipeline — NOT for routine task execution)
     {
-      name: 'execute_task',
+      name: 'execute_pipeline',
       description:
-        'Start executing a task by triggering its pipeline. This creates a new pipeline run and transitions the task to in_progress state. Use this to pick up work during pulse.',
-      label: 'execute_task',
+        'Start a MULTI-STEP PIPELINE run for a task (e.g. engineering pipeline with spec → design → implement → review → test → deploy). ' +
+        'This is NOT the normal way to execute tasks during pulse — use spawn_executor instead for single-task execution. ' +
+        'Only use execute_pipeline when you specifically need a full pipeline workflow.',
+      label: 'execute_pipeline',
       parameters: ExecuteTaskParamsSchema,
       execute: async (
         toolCallId: string,
@@ -341,7 +363,7 @@ export function createPulseTools(
             content: [
               {
                 type: 'text',
-                text: `✅ Task execution started!\n\nRun ID: ${data.run_id}\nTask: ${typedParams.taskId}\nProject: ${typedParams.projectId}\n\nThe pipeline is now running autonomously in the engine. Check the dashboard or call get_task_context to follow progress.`,
+                text: `Pipeline run started.\n\nRun ID: ${data.run_id}\nTask: ${typedParams.taskId}\nProject: ${typedParams.projectId}\n\nThe multi-step pipeline is now running. Use get_task_context to follow progress.`,
               },
             ],
             details: {},
@@ -356,6 +378,93 @@ export function createPulseTools(
                 text: `❌ Error executing task: ${errorMessage}`,
               },
             ],
+            details: {},
+          };
+        }
+      },
+    },
+
+    // ── spawn_executor ─────────────────────────────────────────────────────
+    // The primary way to kick off task work during pulse. Spawns a fresh
+    // single-session container that receives the task description as its
+    // prompt, works on the task's git branch, and commits/pushes when done.
+    {
+      name: 'spawn_executor',
+      description:
+        'Spawn a fresh executor session to work on a task. This is the PRIMARY way to execute tasks during pulse. ' +
+        'The executor gets the task description as its prompt, works in an isolated git worktree on the task branch, ' +
+        'and can commit and push changes. It runs as a single focused session (not a multi-step pipeline). ' +
+        'Call claim_task FIRST to atomically assign yourself, then spawn_executor to start the work. ' +
+        'Returns immediately with a run_id — the executor runs asynchronously.',
+      label: 'spawn_executor',
+      parameters: SpawnExecutorParamsSchema,
+      execute: async (
+        _toolCallId: string,
+        params: unknown,
+        signal?: AbortSignal,
+        _onUpdate?: AgentToolUpdateCallback<VoidDetails>
+      ): Promise<AgentToolResult<VoidDetails>> => {
+        const typedParams = params as SpawnExecutorParams;
+
+        try {
+          // First, fetch the task to get its description for the execution prompt
+          const taskUrl = `${API_BASE_URL}/v1/projects/${typedParams.projectId}/tasks/${typedParams.taskId}`;
+          const taskResp = await authFetch(taskUrl, { signal });
+          const taskData = (await taskResp.json()) as any;
+          if (!taskResp.ok) {
+            throw new Error(`Failed to fetch task: ${taskData.detail || taskResp.status}`);
+          }
+
+          // Build execution prompt from task description
+          let executionPrompt = `[Project: ${typedParams.projectId}] [Task: ${taskData.title}]\n\n${taskData.description || '(no description)'}`;
+          if (typedParams.additionalInstructions) {
+            executionPrompt += `\n\n## Additional Instructions\n${typedParams.additionalInstructions}`;
+          }
+
+          // Call spawn-executor endpoint
+          const url = `${API_BASE_URL}/v1/spawn-executor`;
+          const body: any = {
+            agent_id: agentId,
+            project_id: typedParams.projectId,
+            task_id: typedParams.taskId,
+            execution_prompt: executionPrompt,
+            timeout_seconds: Math.min(typedParams.timeoutSeconds || 300, 600),
+          };
+
+          const response = await authFetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal,
+          });
+
+          if (!response.ok) {
+            const errorData = (await response.json().catch(() => ({}))) as { detail?: string };
+            throw new Error(errorData.detail || `${response.status} ${response.statusText}`);
+          }
+
+          const data = (await response.json()) as { run_id?: string; memory_injection?: boolean };
+
+          return {
+            content: [{
+              type: 'text',
+              text: [
+                `Executor spawned for task "${taskData.title}".`,
+                ``,
+                `**Run ID**: ${data.run_id}`,
+                `**Task**: ${typedParams.taskId}`,
+                `**Memory injection**: ${data.memory_injection ? 'yes (past lessons included)' : 'no'}`,
+                ``,
+                `The executor is now running asynchronously in its own container with a git worktree.`,
+                `It will commit and push when done. Use get_task_context to check progress.`,
+              ].join('\n'),
+            }],
+            details: {},
+          };
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          return {
+            content: [{ type: 'text', text: `Error spawning executor: ${errorMessage}` }],
             details: {},
           };
         }

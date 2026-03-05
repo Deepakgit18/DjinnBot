@@ -72,7 +72,7 @@ PROVIDER_ENV_KEYS = {
 }
 
 REPO_URL = "https://github.com/BaseDatum/djinnbot.git"
-GITHUB_API_RELEASES = "https://api.github.com/repos/BaseDatum/djinnbot/releases/latest"
+GITHUB_API_RELEASES = "https://api.github.com/repos/BaseDatum/djinnbot/releases"
 
 GHCR_IMAGES = {
     "api": "ghcr.io/basedatum/djinnbot/api",
@@ -262,23 +262,33 @@ def wait_for_health(url: str, timeout: int = 180) -> bool:
 
 
 def fetch_latest_release_tag() -> str:
-    """Fetch the latest release tag from GitHub. Falls back to 'main'."""
+    """Fetch the latest whole-project release tag from GitHub. Falls back to 'main'.
+
+    Only considers releases whose tag is pure semver (``vX.Y.Z``).  Tags with
+    prefixes like ``app-v1.0.0`` or ``cli-v2.0.0`` are interface/tool releases
+    and are skipped.
+    """
     try:
         import json as _json
 
         result = subprocess.run(
-            ["curl", "-sf", "--max-time", "10", GITHUB_API_RELEASES],
+            ["curl", "-sf", "--max-time", "10", f"{GITHUB_API_RELEASES}?per_page=30"],
             capture_output=True,
             text=True,
             timeout=15,
         )
         if result.returncode == 0:
-            data = _json.loads(result.stdout)
-            tag = data.get("tag_name", "")
-            if tag:
-                # CI tags images as semver (without 'v' prefix) and also 'latest'
-                # e.g. tag "v1.2.3" → image tag "1.2.3" and "latest"
-                return "latest"
+            releases = _json.loads(result.stdout)
+            for release in releases:
+                if release.get("draft") or release.get("prerelease"):
+                    continue
+                tag = release.get("tag_name", "")
+                # Only accept pure semver tags (vX.Y.Z) — skip prefixed tags
+                # like "app-v1.0.0" or "cli-v2.0.0" which are tool releases.
+                if re.match(r"^v?\d+\.\d+\.\d+$", tag):
+                    # CI tags images as semver (without 'v' prefix) and also 'latest'
+                    # e.g. tag "v1.2.3" → image tag "1.2.3" and "latest"
+                    return "latest"
         return "main"
     except Exception:
         return "main"
