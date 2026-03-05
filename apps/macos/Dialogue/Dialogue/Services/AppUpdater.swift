@@ -333,12 +333,31 @@ final class AppUpdater: ObservableObject {
                     continuation.resume(throwing: error)
                     return
                 }
+
+                // Validate HTTP status — a non-2xx response (e.g. 404, 401,
+                // or a redirect to an HTML page) would save garbage that
+                // hdiutil can't mount.
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    continuation.resume(throwing: UpdateError.downloadFailed)
+                    return
+                }
+
                 guard let tempURL = tempURL else {
                     continuation.resume(throwing: UpdateError.downloadFailed)
                     return
                 }
                 do {
                     try FileManager.default.moveItem(at: tempURL, to: destPath)
+
+                    // Sanity-check: a valid DMG should be at least ~100 KB.
+                    let attrs = try FileManager.default.attributesOfItem(atPath: destPath.path)
+                    let size = attrs[.size] as? UInt64 ?? 0
+                    if size < 100_000 {
+                        try? FileManager.default.removeItem(at: destPath)
+                        continuation.resume(throwing: UpdateError.downloadFailed)
+                        return
+                    }
+
                     continuation.resume(returning: destPath)
                 } catch {
                     continuation.resume(throwing: error)
@@ -367,7 +386,12 @@ final class AppUpdater: ObservableObject {
     private func performInstall(dmgPath: URL) async throws {
         let fm = FileManager.default
 
-        // 1. Mount the DMG.
+        // 1. Strip the quarantine xattr that macOS adds to files downloaded
+        //    via URLSession. Without this, hdiutil may silently refuse to
+        //    mount the DMG due to Gatekeeper (especially with -quiet).
+        stripQuarantine(at: dmgPath)
+
+        // 2. Mount the DMG.
         log.info("Mounting DMG at \(dmgPath.path)")
         let mountPoint = try await mountDMG(at: dmgPath)
         log.info("DMG mounted at \(mountPoint)")
@@ -515,7 +539,7 @@ final class AppUpdater: ObservableObject {
             DispatchQueue.global(qos: .userInitiated).async { [log] in
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-                process.arguments = ["attach", dmgPath, "-nobrowse", "-quiet", "-plist"]
+                process.arguments = ["attach", dmgPath, "-nobrowse", "-plist"]
 
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()
@@ -526,7 +550,7 @@ final class AppUpdater: ObservableObject {
                     try process.run()
                 } catch {
                     log.error("hdiutil failed to launch: \(error)")
-                    continuation.resume(throwing: UpdateError.dmgMountFailed)
+                    continuation.resume(throwing: UpdateError.dmgMountFailed("hdiutil failed to launch: \(error.localizedDescription)"))
                     return
                 }
                 process.waitUntilExit()
@@ -534,7 +558,7 @@ final class AppUpdater: ObservableObject {
                 guard process.terminationStatus == 0 else {
                     let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
                     log.error("hdiutil attach exited with \(process.terminationStatus): \(stderr)")
-                    continuation.resume(throwing: UpdateError.dmgMountFailed)
+                    continuation.resume(throwing: UpdateError.dmgMountFailed("hdiutil exited with status \(process.terminationStatus): \(stderr.trimmingCharacters(in: .whitespacesAndNewlines))"))
                     return
                 }
 
@@ -544,7 +568,7 @@ final class AppUpdater: ObservableObject {
                       let entities = plist["system-entities"] as? [[String: Any]]
                 else {
                     log.error("hdiutil attach: failed to parse plist output")
-                    continuation.resume(throwing: UpdateError.dmgMountFailed)
+                    continuation.resume(throwing: UpdateError.dmgMountFailed("could not parse hdiutil plist output"))
                     return
                 }
 
@@ -556,9 +580,22 @@ final class AppUpdater: ObservableObject {
                 }
 
                 log.error("hdiutil attach: no mount-point found in plist entities")
-                continuation.resume(throwing: UpdateError.dmgMountFailed)
+                continuation.resume(throwing: UpdateError.dmgMountFailed("no mount-point found in hdiutil output"))
             }
         }
+    }
+
+    /// Removes the com.apple.quarantine extended attribute that macOS sets
+    /// on files downloaded via URLSession. This prevents Gatekeeper from
+    /// adding latency or failing on offline machines during `hdiutil attach`.
+    private nonisolated func stripQuarantine(at url: URL) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        process.arguments = ["-d", "com.apple.quarantine", url.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
+        process.waitUntilExit()
     }
 
     /// Unmounts a DMG volume. Waits for completion so callers can safely
@@ -623,7 +660,7 @@ final class AppUpdater: ObservableObject {
         case httpError(Int)
         case noReleasesFound
         case downloadFailed
-        case dmgMountFailed
+        case dmgMountFailed(String)
         case noAppInDMG
         case installCopyFailed(String)
 
@@ -633,7 +670,7 @@ final class AppUpdater: ObservableObject {
             case .httpError(let code): return "GitHub API returned HTTP \(code)."
             case .noReleasesFound: return "No app releases found on GitHub."
             case .downloadFailed: return "DMG download failed."
-            case .dmgMountFailed: return "Failed to mount the DMG."
+            case .dmgMountFailed(let detail): return "Failed to mount the DMG: \(detail)"
             case .noAppInDMG: return "No .app found inside the DMG."
             case .installCopyFailed(let msg): return "Failed to copy new app: \(msg)"
             }
