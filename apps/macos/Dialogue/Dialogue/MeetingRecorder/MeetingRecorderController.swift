@@ -118,11 +118,14 @@ final class MeetingRecorderController: ObservableObject {
             mergeEngine.reset()
 
             // Start dual audio capture with the selected diarization mode
+            // and the user's preferred microphone (persisted as a CoreAudio UID).
             preparationStatus = "Starting audio capture…"
+            let preferredMicUID = UserDefaults.standard.string(forKey: "selectedInputDeviceUID")
             try await dualEngine.start(
                 micEnabled: true,
                 meetingEnabled: !meetingApps.isEmpty,
-                diarizationMode: diarizationMode
+                diarizationMode: diarizationMode,
+                micDeviceUID: preferredMicUID
             )
 
             // Bind merge engine output to our published property

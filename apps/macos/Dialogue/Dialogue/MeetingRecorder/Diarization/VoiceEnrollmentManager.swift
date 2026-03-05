@@ -81,10 +81,17 @@ final class VoiceEnrollmentManager: ObservableObject {
     }
 
     /// Refresh the list of available input devices and the current selection.
+    /// Respects the user's persisted mic preference from Settings.
     func refreshDevices() {
         availableDevices = streamer.listInputDevices()
         if currentDeviceID == nil {
-            currentDeviceID = streamer.currentDevice?.audioDeviceID ?? streamer.defaultInputDevice()?.audioDeviceID
+            // Try the user's persisted preference first
+            let preferredUID = UserDefaults.standard.string(forKey: "selectedInputDeviceUID") ?? ""
+            if !preferredUID.isEmpty, let preferred = streamer.deviceByUID(preferredUID) {
+                currentDeviceID = preferred.audioDeviceID
+            } else {
+                currentDeviceID = streamer.currentDevice?.audioDeviceID ?? streamer.defaultInputDevice()?.audioDeviceID
+            }
         }
     }
 
@@ -210,20 +217,26 @@ final class VoiceEnrollmentManager: ObservableObject {
         stopPreview()
         LogStore.shared.log("Starting mic preview via AudioInputStreamer", category: .voiceEnrollment)
 
-        // Select default device if none selected
+        // Select device if none selected — respect user's Settings preference
         if streamer.currentDevice == nil {
-            if let defaultDevice = streamer.defaultInputDevice() {
-                do {
-                    try streamer.selectDevice(defaultDevice)
-                    currentDeviceID = defaultDevice.audioDeviceID
-                } catch {
-                    logger.warning("Preview: failed to select default device: \(error.localizedDescription)")
-                    LogStore.shared.log("Preview: failed to select default device: \(error.localizedDescription)", category: .voiceEnrollment, level: .warning)
-                    return
-                }
+            let preferredUID = UserDefaults.standard.string(forKey: "selectedInputDeviceUID") ?? ""
+            let device: AudioDevice?
+            if !preferredUID.isEmpty {
+                device = streamer.deviceByUID(preferredUID) ?? streamer.defaultInputDevice()
             } else {
+                device = streamer.defaultInputDevice()
+            }
+            guard let device else {
                 logger.warning("Preview: no input device available")
                 LogStore.shared.log("Preview: no input device available", category: .voiceEnrollment, level: .warning)
+                return
+            }
+            do {
+                try streamer.selectDevice(device)
+                currentDeviceID = device.audioDeviceID
+            } catch {
+                logger.warning("Preview: failed to select device: \(error.localizedDescription)")
+                LogStore.shared.log("Preview: failed to select device: \(error.localizedDescription)", category: .voiceEnrollment, level: .warning)
                 return
             }
         }

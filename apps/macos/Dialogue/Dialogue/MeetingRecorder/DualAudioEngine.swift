@@ -3,12 +3,16 @@ import Foundation
 import OSLog
 import ScreenCaptureKit
 
-/// Manages dual audio capture: local microphone (AVAudioEngine) and
-/// meeting app audio (ScreenCaptureKit per-app SCStream).
+/// Manages dual audio capture: local microphone (`AudioInputStreamer` HAL unit)
+/// and meeting app audio (ScreenCaptureKit per-app SCStream).
 ///
 /// Audio from both sources is:
 /// 1. Fed to independent `RealtimePipeline` instances for ASR + diarization
 /// 2. Written to a single mixed WAV file via `MixedWAVRecorder`
+///
+/// **Mic capture**: Uses `AudioInputStreamer` (Core Audio HAL Output Audio Unit)
+/// for reliable device selection independent of system defaults. The user's
+/// preferred mic (persisted as a UID in UserDefaults) is resolved at start time.
 ///
 /// **Per-app capture**: Only captures audio from detected meeting apps
 /// (Zoom, Teams, Chrome, etc.) via `SCContentFilter(including:)`,
@@ -22,7 +26,12 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
 
     // MARK: - Properties
 
-    private let audioEngine = AVAudioEngine()
+    /// HAL Output-based mic streamer — replaces AVAudioEngine for mic capture.
+    private let micStreamer = AudioInputStreamer()
+
+    /// Task consuming the mic AsyncStream.
+    private var micStreamTask: Task<Void, Never>?
+
     private let mixedRecorder = MixedWAVRecorder(filenamePrefix: "meeting", isMixer: true)
     private let localRecorder = MixedWAVRecorder(filenamePrefix: "local")
     private let remoteRecorder = MixedWAVRecorder(filenamePrefix: "remote")
@@ -31,19 +40,6 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
     private var scStream: SCStream?
     private var meetingApps: [SCRunningApplication] = []
     private let logger = Logger(subsystem: "bot.djinn.app.dialog", category: "DualAudioEngine")
-
-    /// Persistent converter for mic 48 kHz → 16 kHz mono.
-    ///
-    /// CRITICAL: Must be created once and reused across all mic tap callbacks.
-    /// Creating a new `AVAudioConverter` per buffer loses the resampling
-    /// filter's internal state (fractional samples, filter delay), causing
-    /// ~7% cumulative sample loss over long recordings. This makes the mic
-    /// stream progressively shorter than the meeting stream, and the
-    /// sample-count-aligned mixer produces audible cross-talk overlap.
-    private var micConverter: AVAudioConverter?
-    /// Pre-allocated output buffer for the persistent mic converter.
-    /// Sized for the worst-case output from a single tap callback.
-    private var micConvertBuffer: AVAudioPCMBuffer?
 
     /// Serial queue for ScreenCaptureKit audio callbacks.
     private let scAudioQueue = DispatchQueue(label: "bot.djinn.app.dialog.sc-audio", qos: .userInteractive)
@@ -70,10 +66,13 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
     ///   - micEnabled: Whether to capture local microphone audio
     ///   - meetingEnabled: Whether to capture meeting app audio
     ///   - diarizationMode: Which diarization backend to use
+    ///   - micDeviceUID: CoreAudio UID of the preferred microphone (from UserDefaults).
+    ///                    If nil or not found, falls back to the system default.
     func start(
         micEnabled: Bool,
         meetingEnabled: Bool,
-        diarizationMode: DiarizationMode = .pyannoteStreaming
+        diarizationMode: DiarizationMode = .pyannoteStreaming,
+        micDeviceUID: String? = nil
     ) async throws {
         logger.info("Starting DualAudioEngine (mic: \(micEnabled), meeting: \(meetingEnabled), diarization: \(diarizationMode.rawValue))")
         LogStore.shared.log("Starting DualAudioEngine (mic: \(micEnabled), meeting: \(meetingEnabled), diarization: \(diarizationMode.rawValue))", category: .audio)
@@ -115,56 +114,20 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
             try await remoteRecorder.start()
         }
 
-        // Install mic tap at hardware format, but convert with a PERSISTENT
-        // AVAudioConverter that maintains resampling filter state across calls.
-        //
-        // CRITICAL: Do NOT create a new AVAudioConverter per buffer (as
-        // MeetingAudioConverter.convertTo16kMono() does). Resampling filters
-        // carry fractional samples and filter delay between calls. Recreating
-        // the converter discards that state, losing ~7% of samples over a
-        // 30+ minute recording. This makes the mic stream progressively
-        // shorter than the meeting stream, and the sample-count-aligned mixer
-        // produces audible cross-talk overlap (~30s drift per 8 minutes).
+        // Select the user's preferred mic device via AudioInputStreamer.
+        // Falls back to system default if the saved UID is not found.
         if micEnabled {
-            let inputNode = audioEngine.inputNode
-            let hwFormat = inputNode.inputFormat(forBus: 0)
-            LogStore.shared.log("Mic input node format: \(hwFormat.sampleRate) Hz, \(hwFormat.channelCount) ch, \(hwFormat.commonFormat.rawValue)", category: .audio)
-
-            guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
-                LogStore.shared.log("FATAL: Mic input node has invalid format (sampleRate=\(hwFormat.sampleRate), channels=\(hwFormat.channelCount)). No microphone available.", category: .audio, level: .error)
-                throw DualAudioEngineError.noMicrophoneAvailable
-            }
-
-            let targetFmt = MeetingAudioConverter.targetFormat
-            if hwFormat.sampleRate == targetFmt.sampleRate,
-               hwFormat.channelCount == targetFmt.channelCount,
-               hwFormat.commonFormat == targetFmt.commonFormat {
-                micConverter = nil
-                micConvertBuffer = nil
-                LogStore.shared.log("Mic already at target format (16kHz mono) — no converter needed", category: .audio)
-            } else {
-                let converter = AVAudioConverter(from: hwFormat, to: targetFmt)
-                self.micConverter = converter
-                let maxOut = AVAudioFrameCount(ceil(Double(8192) * targetFmt.sampleRate / hwFormat.sampleRate)) + 64
-                self.micConvertBuffer = AVAudioPCMBuffer(pcmFormat: targetFmt, frameCapacity: maxOut)
-                LogStore.shared.log("Mic converter created: \(hwFormat.sampleRate)Hz -> \(targetFmt.sampleRate)Hz, buffer capacity: \(maxOut) frames", category: .audio)
-            }
-
-            inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, _ in
-                self?.handleMicBuffer(buffer)
-            }
-            LogStore.shared.log("Mic tap installed (bufferSize: 4096, format: \(hwFormat.sampleRate)Hz)", category: .audio)
+            try selectMicDevice(preferredUID: micDeviceUID)
         }
 
-        audioEngine.prepare()
-        LogStore.shared.log("AVAudioEngine prepared. Starting capture...", category: .audio)
-
         // Start the timeline clock and all audio capture simultaneously.
-        // Both mic (audioEngine) and meeting (SCStream) begin here so
+        // Both mic (AudioInputStreamer) and meeting (SCStream) begin here so
         // WAV file position 0 = transcript time 0 for both streams.
         TimelineManager.shared.start()
-        try audioEngine.start()
-        LogStore.shared.log("AVAudioEngine started (isRunning: \(audioEngine.isRunning))", category: .audio)
+
+        if micEnabled {
+            try startMicCapture()
+        }
 
         if let stream = scStream {
             try await stream.startCapture()
@@ -173,6 +136,42 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
 
         logger.info("DualAudioEngine started")
         LogStore.shared.log("DualAudioEngine fully started", category: .audio)
+    }
+
+    // MARK: - Mic Device Selection
+
+    /// Resolve and select the preferred mic device on the AudioInputStreamer.
+    private func selectMicDevice(preferredUID: String?) throws {
+        if let uid = preferredUID, !uid.isEmpty,
+           let device = micStreamer.deviceByUID(uid) {
+            try micStreamer.selectDevice(device)
+            LogStore.shared.log("Selected preferred mic: \(device.name) (UID: \(uid))", category: .audio)
+        } else if let defaultDevice = micStreamer.defaultInputDevice() {
+            try micStreamer.selectDevice(defaultDevice)
+            if let uid = preferredUID, !uid.isEmpty {
+                LogStore.shared.log("Preferred mic UID '\(uid)' not found; using default: \(defaultDevice.name)", category: .audio, level: .warning)
+            } else {
+                LogStore.shared.log("No mic preference set; using default: \(defaultDevice.name)", category: .audio)
+            }
+        } else {
+            throw DualAudioEngineError.noMicrophoneAvailable
+        }
+    }
+
+    // MARK: - Mic Capture via AudioInputStreamer
+
+    /// Start mic capture using the AudioInputStreamer and consume its AsyncStream.
+    private func startMicCapture() throws {
+        let stream = try micStreamer.start(sampleRate: 16_000)
+        let deviceName = micStreamer.currentDevice?.name ?? "unknown"
+        LogStore.shared.log("Mic capture started via AudioInputStreamer (device: \(deviceName), 16kHz mono)", category: .audio)
+
+        micStreamTask = Task { [weak self] in
+            for await buffer in stream {
+                guard let self, !Task.isCancelled else { break }
+                self.handleMicBuffer(buffer)
+            }
+        }
     }
 
     // MARK: - ScreenCaptureKit Setup
@@ -229,9 +228,8 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
 
     /// Process a microphone buffer: feed to mic pipeline + WAV recorders.
     ///
-    /// The buffer arrives at the hardware format (typically 48 kHz).
-    /// We convert to 16 kHz mono using the **persistent** `micConverter`
-    /// which maintains proper resampling state across all callbacks.
+    /// Buffers arrive at 16 kHz mono Float32 from AudioInputStreamer —
+    /// already at the target format, no conversion needed.
     private func handleMicBuffer(_ buffer: AVAudioPCMBuffer) {
         micBufferCount += 1
         let time = TimelineManager.shared.currentAudioTime()
@@ -242,7 +240,7 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
         // Compute RMS for the waveform visualization.
         micLevel = Self.rmsLevel(of: buffer)
 
-        // Log every ~250 buffers (~4 seconds at 4096 samples / 48kHz) to track mic health
+        // Log every ~250 buffers (~4 seconds at 4096 samples / 16kHz) to track mic health
         if micBufferCount == 1 {
             LogStore.shared.log("First mic buffer received (frames: \(buffer.frameLength), level: \(String(format: "%.4f", micLevel)))", category: .audio)
         } else if micBufferCount % 250 == 0 {
@@ -253,36 +251,10 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
             LogStore.shared.log("Mic level near zero at buffer #\(micBufferCount) (level: \(String(format: "%.6f", micLevel))). Mic may have stopped providing audio.", category: .audio, level: .warning)
         }
 
-        // Convert to 16 kHz mono using the persistent converter.
-        let converted: AVAudioPCMBuffer
-        if let converter = micConverter, let outBuf = micConvertBuffer {
-            outBuf.frameLength = 0
-            var error: NSError?
-            var consumed = false
-            converter.convert(to: outBuf, error: &error) { _, outStatus in
-                if consumed {
-                    outStatus.pointee = .noDataNow
-                    return nil
-                }
-                consumed = true
-                outStatus.pointee = .haveData
-                return buffer
-            }
-            if let error {
-                logger.error("Mic converter error: \(error.localizedDescription)")
-                LogStore.shared.log("Mic converter error: \(error.localizedDescription)", category: .audio, level: .error)
-                return
-            }
-            guard outBuf.frameLength > 0 else { return }
-            converted = outBuf
-        } else {
-            // No converter needed (already at target format).
-            converted = buffer
-        }
-
+        // Write to WAV recorders — buffers are already 16 kHz mono Float32.
         let mixed = self.mixedRecorder
         let local = self.localRecorder
-        let wavSamples = MeetingAudioConverter.toFloatArray(converted)
+        let wavSamples = MeetingAudioConverter.toFloatArray(buffer)
         if !wavSamples.isEmpty {
             Task {
                 await mixed.writeMicSamples(wavSamples)
@@ -329,7 +301,7 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
         var sumOfSquares: Float = 0
 
         if let floatData = buffer.floatChannelData {
-            // Float32 — typical for AVAudioEngine mic tap
+            // Float32 — typical for AudioInputStreamer mic capture
             let samples = floatData[0]
             for i in 0..<frames {
                 let s = samples[i]
@@ -381,8 +353,10 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
         LogStore.shared.log("Stopping DualAudioEngine (mic buffers processed: \(micBufferCount), meeting buffers: \(meetingBufferCount))", category: .audio)
 
         // Stop audio sources FIRST — no new buffers after this.
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
+        micStreamTask?.cancel()
+        micStreamTask = nil
+        micStreamer.stop()
+
         if let stream = scStream {
             try? await stream.stopCapture()
             self.scStream = nil
@@ -402,8 +376,6 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
         micPipeline = nil
         meetingPipeline = nil
         meetingApps = []
-        micConverter = nil
-        micConvertBuffer = nil
 
         // Now stop WAV recorders — pending writes bail instantly due to shutdown flag.
         let mixedURL = await mixedRecorder.stop()

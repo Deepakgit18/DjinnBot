@@ -14,6 +14,10 @@ struct SettingsView: View {
     // Diarization engine
     @AppStorage("diarizationMode") private var diarizationMode: DiarizationMode = .pyannoteStreaming
 
+    // Preferred microphone (persisted as CoreAudio UID, stable across reboots)
+    @AppStorage("selectedInputDeviceUID") private var selectedInputDeviceUID: String = ""
+    @State private var availableInputDevices: [AudioDevice] = []
+
     // Voice ID threshold (0.65 default when UserDefaults key is unset / zero)
     @State private var similarityThreshold: Double = {
         let v = UserDefaults.standard.double(forKey: "voiceID_similarityThreshold")
@@ -197,6 +201,29 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                }
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Microphone")
+                        .font(.headline)
+
+                    Text("Select which microphone to use for meeting recordings and voice enrollment. This setting is independent of the system default input device.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Picker("Input Device", selection: $selectedInputDeviceUID) {
+                    Text("System Default")
+                        .tag("")
+                    ForEach(availableInputDevices) { device in
+                        Text(device.name)
+                            .tag(device.uid)
+                    }
+                }
+                .onAppear {
+                    refreshInputDevices()
                 }
             }
 
@@ -526,6 +553,11 @@ struct SettingsView: View {
     }
 
     // MARK: - Actions
+
+    private func refreshInputDevices() {
+        let streamer = AudioInputStreamer()
+        availableInputDevices = streamer.listInputDevices()
+    }
 
     private func loadVoices() {
         voices = VoiceID.shared.allEnrolledVoices()

@@ -172,6 +172,12 @@ public final class AudioInputStreamer: @unchecked Sendable {
         )
     }
 
+    /// Find an input device by its CoreAudio UID string (stable across reboots).
+    /// Returns nil if no device with that UID is currently connected.
+    public func deviceByUID(_ uid: String) -> AudioDevice? {
+        return listInputDevices().first(where: { $0.uid == uid })
+    }
+
     // MARK: - Device Selection
 
     /// Select a specific input device for capture.
