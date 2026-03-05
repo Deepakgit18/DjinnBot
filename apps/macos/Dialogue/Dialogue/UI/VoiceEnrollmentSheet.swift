@@ -3,7 +3,7 @@ import SwiftUI
 /// Sheet for enrolling a new speaker voice via 3 recording clips.
 ///
 /// Flow:
-/// 1. User enters a name and selects a microphone.
+/// 1. User enters a name.
 /// 2. For each of 3 clips, a reading prompt is displayed.
 /// 3. User presses "Start Recording", reads the prompt aloud (~10 seconds).
 /// 4. User presses "Stop" — clip is stored.
@@ -11,7 +11,7 @@ import SwiftUI
 ///
 /// The level meter shows live mic input at all times — before, during, and
 /// after recording. If no audio input is detected during recording, a warning
-/// appears and the recording auto-stops with actionable troubleshooting tips.
+/// appears and the recording auto-stops with a link to System Settings.
 @available(macOS 26.0, *)
 struct VoiceEnrollmentSheet: View {
 
@@ -47,11 +47,8 @@ struct VoiceEnrollmentSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 300)
 
-            // Microphone picker + live level
-            VStack(spacing: 8) {
-                microphonePicker
-                levelMeter(level: manager.peakLevel)
-            }
+            // Live mic level
+            levelMeter(level: manager.peakLevel)
 
             // Color picker
             VStack(spacing: 4) {
@@ -131,36 +128,6 @@ struct VoiceEnrollmentSheet: View {
         }
         .onDisappear {
             manager.cleanup()
-        }
-    }
-
-    // MARK: - Microphone Picker
-
-    private var microphonePicker: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "mic.fill")
-                .foregroundStyle(.secondary)
-                .font(.caption)
-
-            Picker("Microphone", selection: $manager.selectedDevice) {
-                Text("System Default")
-                    .tag(nil as AudioInputDeviceManager.InputDevice?)
-                ForEach(manager.availableDevices) { device in
-                    Text(device.name)
-                        .tag(device as AudioInputDeviceManager.InputDevice?)
-                }
-            }
-            .labelsHidden()
-            .frame(maxWidth: 280)
-
-            Button {
-                manager.refreshDevices()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.caption)
-            }
-            .buttonStyle(.borderless)
-            .help("Refresh device list")
         }
     }
 
@@ -343,48 +310,11 @@ struct VoiceEnrollmentSheet: View {
             Text("No Audio Input Detected")
                 .font(.headline)
 
-            Text("The recording was stopped because no audio was received from the microphone.")
+            Text("The recording was stopped because no audio was received from the microphone. Please check your audio input device in System Settings.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 360)
-
-            // Troubleshooting suggestions
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Try the following:")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-
-                troubleshootingItem(
-                    icon: "speaker.wave.2.fill",
-                    text: "Select a different microphone above and check the level meter responds"
-                )
-                troubleshootingItem(
-                    icon: "gear",
-                    text: "Open System Settings > Sound > Input and verify the mic is active"
-                )
-                troubleshootingItem(
-                    icon: "lock.shield.fill",
-                    text: "Check System Settings > Privacy & Security > Microphone — ensure Dialogue has access"
-                )
-                troubleshootingItem(
-                    icon: "cable.connector",
-                    text: "If using an external mic, check the cable or USB connection"
-                )
-            }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.primary.opacity(0.03))
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button {
-                manager.startRecording()
-            } label: {
-                Label("Try Again", systemImage: "arrow.counterclockwise")
-            }
-            .buttonStyle(.borderedProminent)
 
             Button("Open Sound Settings") {
                 if let url = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension") {
@@ -393,18 +323,13 @@ struct VoiceEnrollmentSheet: View {
             }
             .buttonStyle(.link)
             .font(.caption)
-        }
-    }
 
-    private func troubleshootingItem(icon: String, text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: icon)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 16)
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Button {
+                manager.startRecording()
+            } label: {
+                Label("Try Again", systemImage: "arrow.counterclockwise")
+            }
+            .buttonStyle(.borderedProminent)
         }
     }
 

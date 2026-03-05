@@ -9,20 +9,21 @@ import OSLog
 ///
 /// Usage:
 /// 1. Call `prepare()` — no model preloading needed (VoiceID owns the runner).
-/// 2. Optionally change `selectedDevice` to choose a microphone.
-/// 3. For each of 3 clips:
+/// 2. For each of 3 clips:
 ///    a. Call `startRecording()` — user reads the displayed prompt.
 ///    b. Call `stopRecording()` — clip is stored internally.
-/// 4. After 3 clips, call `saveProfile(name:)` to enroll via VoiceID.
+/// 3. After 3 clips, call `saveProfile(name:)` to enroll via VoiceID.
+///
+/// Always uses the system default audio input device. If the user needs to
+/// change their microphone, they should do so in System Settings > Sound.
 ///
 /// **Live mic preview**: Whenever the manager is in `.ready` or `.silenceDetected`
 /// state, a lightweight preview engine runs to show live mic levels in the UI.
-/// The preview restarts automatically when the user changes `selectedDevice`.
 ///
 /// **Silence detection**: During recording, the manager tracks consecutive
 /// silence duration. If the audio level stays below `silenceThreshold` for
 /// `silenceAutoStopDelay` seconds, recording auto-stops and transitions to
-/// the `silenceDetected` state with actionable suggestions for the user.
+/// the `silenceDetected` state with a prompt to check System Settings.
 ///
 /// Minimum recommended recording per clip: 5 seconds (3s absolute minimum).
 /// Best results at 8–10 seconds of clear solo speech per clip.
@@ -52,26 +53,6 @@ final class VoiceEnrollmentManager: ObservableObject {
 
     /// Total clips required for enrollment.
     let requiredClipCount: Int = 3
-
-    // MARK: - Microphone Selection
-
-    /// Available audio input devices. Refreshed on `prepare()` and
-    /// when the user taps the refresh button.
-    @Published private(set) var availableDevices: [AudioInputDeviceManager.InputDevice] = []
-
-    /// The currently selected input device. `nil` means use the system default.
-    /// Changing this while in `.ready` or `.silenceDetected` restarts the
-    /// preview engine on the new device so the level meter updates immediately.
-    @Published var selectedDevice: AudioInputDeviceManager.InputDevice? {
-        didSet {
-            guard selectedDevice?.audioDeviceID != oldValue?.audioDeviceID else { return }
-            logger.info("Selected input device: \(self.selectedDevice?.name ?? "System Default")")
-            // Restart preview on the new device if we're in a preview-eligible state
-            if shouldPreview {
-                restartPreview()
-            }
-        }
-    }
 
     // MARK: - Silence Detection
 
@@ -114,7 +95,7 @@ final class VoiceEnrollmentManager: ObservableObject {
 
     /// Lightweight engine used for live mic level preview.
     /// Runs when not recording so the user can see the level meter respond
-    /// and verify the correct mic is selected before pressing record.
+    /// before pressing record.
     private var previewEngine: AVAudioEngine?
 
     /// Collected audio clips (16 kHz mono Float32) from each recording round.
@@ -133,11 +114,118 @@ final class VoiceEnrollmentManager: ObservableObject {
         }
     }
 
-    /// The ID of the system default input device at launch.
-    /// We skip calling `setInputDevice` when the user's selection matches
-    /// this, since AVAudioEngine already uses it and setting it explicitly
-    /// can cause issues on some configurations.
-    private var systemDefaultDeviceID: AudioDeviceID?
+    /// Observer token for `AVAudioEngineConfigurationChange` on the preview engine.
+    private var previewConfigObserver: NSObjectProtocol?
+    /// Observer token for `AVAudioEngineConfigurationChange` on the recording engine.
+    private var recordingConfigObserver: NSObjectProtocol?
+
+    /// Whether we're currently handling a device change to prevent re-entrancy.
+    private var isHandlingDeviceChange = false
+
+    /// The CoreAudio property listener block, stored so we can remove it later.
+    /// Must be the exact same block reference for add/remove.
+    private nonisolated(unsafe) var deviceChangeListenerBlock: AudioObjectPropertyListenerBlock?
+
+    // MARK: - Default Device Change Observation
+
+    /// Start observing the system default input device via CoreAudio.
+    /// When the user switches their mic in System Settings, we get a callback
+    /// and can restart the active engine on the new device.
+    private func startObservingDefaultDevice() {
+        // Remove any existing listener first
+        stopObservingDefaultDevice()
+
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor in
+                self?.handleDefaultInputDeviceChanged()
+            }
+        }
+        deviceChangeListenerBlock = block
+
+        let status = AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            DispatchQueue.main,
+            block
+        )
+
+        if status != noErr {
+            logger.error("Failed to add default input device listener: OSStatus \(status)")
+        } else {
+            logger.info("Observing default input device changes")
+        }
+    }
+
+    /// Stop observing the system default input device.
+    private func stopObservingDefaultDevice() {
+        guard let block = deviceChangeListenerBlock else { return }
+
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            DispatchQueue.main,
+            block
+        )
+        deviceChangeListenerBlock = nil
+    }
+
+    /// Called when the system default input device changes.
+    /// Restarts the preview or recording engine on the new device.
+    private func handleDefaultInputDeviceChanged() {
+        guard !isHandlingDeviceChange else { return }
+        isHandlingDeviceChange = true
+        defer { isHandlingDeviceChange = false }
+
+        let deviceName = AudioInputDeviceManager.defaultInputDevice()?.name ?? "unknown"
+        logger.info("Default input device changed to: \(deviceName)")
+        LogStore.shared.log("Default input device changed to '\(deviceName)'. Restarting active engine.", category: .voiceEnrollment)
+
+        switch state {
+        case .recording:
+            // Restart the recording engine on the new device.
+            // Samples collected so far are already converted to 16kHz mono
+            // and remain valid. We just need a fresh engine for the new hardware.
+            restartRecordingEngine()
+
+        case .ready, .silenceDetected:
+            // Restart the preview to pick up the new device.
+            restartPreview()
+
+        default:
+            // idle, processing, done, error — nothing to restart
+            break
+        }
+    }
+
+    /// Called when an `AVAudioEngine` posts a configuration change notification.
+    /// This fires when the engine's I/O unit detects a channel count or sample
+    /// rate change. The engine has already stopped itself at this point.
+    private func handleEngineConfigChange(isRecordingEngine: Bool) {
+        guard !isHandlingDeviceChange else { return }
+        isHandlingDeviceChange = true
+        defer { isHandlingDeviceChange = false }
+
+        logger.info("AVAudioEngine config change (recording=\(isRecordingEngine))")
+        LogStore.shared.log("AVAudioEngine configuration changed (isRecording=\(isRecordingEngine)). Restarting engine.", category: .voiceEnrollment)
+
+        if isRecordingEngine {
+            restartRecordingEngine()
+        } else if shouldPreview {
+            restartPreview()
+        }
+    }
 
     // MARK: - Lifecycle
 
@@ -149,14 +237,7 @@ final class VoiceEnrollmentManager: ObservableObject {
         clipCount = 0
         LogStore.shared.log("Voice enrollment prepare() called (state: \(String(describing: state)))", category: .voiceEnrollment)
 
-        // Refresh available input devices
-        refreshDevices()
-        LogStore.shared.log("Available input devices: \(availableDevices.map(\.name).joined(separator: ", "))", category: .voiceEnrollment)
-        if let selected = selectedDevice {
-            LogStore.shared.log("Selected device: \(selected.name) (ID: \(selected.audioDeviceID))", category: .voiceEnrollment)
-        } else {
-            LogStore.shared.log("Selected device: System Default", category: .voiceEnrollment)
-        }
+        startObservingDefaultDevice()
 
         do {
             try await VoiceID.shared.prepare()
@@ -171,24 +252,6 @@ final class VoiceEnrollmentManager: ObservableObject {
         }
     }
 
-    /// Refresh the list of available input devices.
-    func refreshDevices() {
-        availableDevices = AudioInputDeviceManager.availableInputDevices()
-
-        // Cache the system default device ID
-        let defaultDevice = AudioInputDeviceManager.defaultInputDevice()
-        systemDefaultDeviceID = defaultDevice?.audioDeviceID
-
-        // If selected device is no longer available, fall back to nil (system default)
-        if let selected = selectedDevice,
-           !availableDevices.contains(where: { $0.audioDeviceID == selected.audioDeviceID }) {
-            selectedDevice = nil
-        }
-
-        // If nothing selected yet, leave as nil (system default).
-        // The picker will show a "System Default" option.
-    }
-
     private var isErrorState: Bool {
         if case .error = state { return true }
         return false
@@ -197,23 +260,12 @@ final class VoiceEnrollmentManager: ObservableObject {
     // MARK: - Mic Preview
 
     /// Start a lightweight mic tap for level monitoring only.
-    /// No samples are stored. Runs on the currently selected device.
+    /// No samples are stored. Runs on the system default input device.
     private func startPreview() {
         stopPreview()
-        LogStore.shared.log("Starting mic preview (device: \(selectedDevice?.name ?? "system default"))", category: .voiceEnrollment)
+        LogStore.shared.log("Starting mic preview (system default device)", category: .voiceEnrollment)
 
         let engine = AVAudioEngine()
-
-        // Set non-default device if user explicitly picked one
-        if let device = selectedDevice, !isSystemDefault(device) {
-            let success = AudioInputDeviceManager.setInputDevice(device, on: engine)
-            if !success {
-                logger.warning("Preview: failed to set device \(device.name), using system default")
-                LogStore.shared.log("Preview: failed to set input device '\(device.name)' (ID: \(device.audioDeviceID)), falling back to system default", category: .voiceEnrollment, level: .warning)
-            } else {
-                LogStore.shared.log("Preview: set input device to '\(device.name)' (ID: \(device.audioDeviceID))", category: .voiceEnrollment)
-            }
-        }
 
         let inputNode = engine.inputNode
         let hwFormat = inputNode.inputFormat(forBus: 0)
@@ -238,7 +290,19 @@ final class VoiceEnrollmentManager: ObservableObject {
         do {
             try engine.start()
             previewEngine = engine
-            logger.info("Mic preview started (device: \(self.selectedDevice?.name ?? "system default"))")
+
+            // Observe config changes (device switches, format changes)
+            previewConfigObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange,
+                object: engine,
+                queue: nil
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.handleEngineConfigChange(isRecordingEngine: false)
+                }
+            }
+
+            logger.info("Mic preview started (system default device)")
             LogStore.shared.log("Mic preview engine started (isRunning: \(engine.isRunning))", category: .voiceEnrollment)
         } catch {
             logger.error("Preview: failed to start engine: \(error.localizedDescription)")
@@ -248,6 +312,10 @@ final class VoiceEnrollmentManager: ObservableObject {
 
     /// Stop the preview engine.
     private func stopPreview() {
+        if let observer = previewConfigObserver {
+            NotificationCenter.default.removeObserver(observer)
+            previewConfigObserver = nil
+        }
         guard let engine = previewEngine else { return }
         LogStore.shared.log("Stopping mic preview engine", category: .voiceEnrollment)
         engine.stop()
@@ -260,12 +328,6 @@ final class VoiceEnrollmentManager: ObservableObject {
     private func restartPreview() {
         stopPreview()
         startPreview()
-    }
-
-    /// Whether a device is the system default (so we don't need to explicitly set it).
-    private func isSystemDefault(_ device: AudioInputDeviceManager.InputDevice) -> Bool {
-        guard let defaultID = systemDefaultDeviceID else { return false }
-        return device.audioDeviceID == defaultID
     }
 
     /// Compute peak amplitude from a buffer without conversion.
@@ -326,19 +388,7 @@ final class VoiceEnrollmentManager: ObservableObject {
         silenceWarningActive = false
 
         let engine = AVAudioEngine()
-
-        // Set non-default device if user explicitly picked one
-        if let device = selectedDevice, !isSystemDefault(device) {
-            let success = AudioInputDeviceManager.setInputDevice(device, on: engine)
-            if !success {
-                logger.warning("Failed to set input device \(device.name), using system default")
-                LogStore.shared.log("Failed to set recording input device '\(device.name)' (ID: \(device.audioDeviceID))", category: .voiceEnrollment, level: .warning)
-            } else {
-                LogStore.shared.log("Recording input device set to '\(device.name)' (ID: \(device.audioDeviceID))", category: .voiceEnrollment)
-            }
-        } else {
-            LogStore.shared.log("Using system default input device for recording", category: .voiceEnrollment)
-        }
+        LogStore.shared.log("Using system default input device for recording", category: .voiceEnrollment)
 
         let inputNode = engine.inputNode
         let hwFormat = inputNode.inputFormat(forBus: 0)
@@ -385,12 +435,119 @@ final class VoiceEnrollmentManager: ObservableObject {
                 }
             }
 
-            logger.info("Enrollment clip \(self.clipCount + 1)/\(self.requiredClipCount) recording started (device: \(self.selectedDevice?.name ?? "system default"))")
+            // Observe config changes (device switches, format changes)
+            recordingConfigObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange,
+                object: engine,
+                queue: nil
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.handleEngineConfigChange(isRecordingEngine: true)
+                }
+            }
+
+            logger.info("Enrollment clip \(self.clipCount + 1)/\(self.requiredClipCount) recording started (system default device)")
             LogStore.shared.log("Enrollment recording engine started (isRunning: \(engine.isRunning), clip \(clipCount + 1)/\(requiredClipCount))", category: .voiceEnrollment)
         } catch {
             state = .error("Failed to start microphone: \(error.localizedDescription)")
             LogStore.shared.log("Failed to start enrollment recording engine: \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
             // Restart preview since recording failed
+            startPreview()
+        }
+    }
+
+    // MARK: - Recording Engine Restart
+
+    /// Tear down the current recording engine without discarding collected samples.
+    /// Used when we need to recreate the engine on a new device.
+    private func stopRecordingEngine() {
+        if let observer = recordingConfigObserver {
+            NotificationCenter.default.removeObserver(observer)
+            recordingConfigObserver = nil
+        }
+        durationTimer?.invalidate()
+        durationTimer = nil
+        recordingEngine?.stop()
+        recordingEngine?.inputNode.removeTap(onBus: 0)
+        recordingEngine = nil
+    }
+
+    /// Restart the recording engine on the new default device.
+    /// Preserves samples already collected (they're already 16kHz mono).
+    /// Picks up the new device's hardware format for the fresh tap.
+    private func restartRecordingEngine() {
+        guard case .recording = state else { return }
+        let samplesBeforeRestart = recordedSamples.count
+        logger.info("Restarting recording engine (preserving \(samplesBeforeRestart) samples)")
+        LogStore.shared.log("Restarting recording engine after device change (\(samplesBeforeRestart) samples preserved)", category: .voiceEnrollment)
+
+        // Tear down old engine (keep samples, keep timer state)
+        stopRecordingEngine()
+
+        // Build a fresh engine on the new default device
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let hwFormat = inputNode.inputFormat(forBus: 0)
+        LogStore.shared.log("New recording engine format: \(hwFormat.sampleRate)Hz, \(hwFormat.channelCount)ch", category: .voiceEnrollment)
+
+        guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
+            logger.warning("Recording restart: no valid input format from new device")
+            LogStore.shared.log("Recording restart failed: no valid input format. Transitioning to silenceDetected.", category: .voiceEnrollment, level: .warning)
+            recordedSamples.removeAll()
+            peakLevel = 0
+            state = .silenceDetected
+            startPreview()
+            return
+        }
+
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, _ in
+            guard let self else { return }
+            guard let converted = MeetingAudioConverter.convertTo16kMono(buffer) else { return }
+            let samples = MeetingAudioConverter.toFloatArray(converted)
+            let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
+            Task { @MainActor in
+                self.recordedSamples.append(contentsOf: samples)
+                self.peakLevel = peak
+            }
+        }
+
+        engine.prepare()
+        do {
+            try engine.start()
+            self.recordingEngine = engine
+
+            // Observe config changes on the new engine
+            recordingConfigObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange,
+                object: engine,
+                queue: nil
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.handleEngineConfigChange(isRecordingEngine: true)
+                }
+            }
+
+            // Restart the duration timer
+            durationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, let start = self.recordingStartDate else { return }
+                    let elapsed = Date().timeIntervalSince(start)
+                    self.recordingDuration = elapsed
+                    self.state = .recording(duration: elapsed)
+                    self.updateSilenceTracking()
+                }
+            }
+
+            logger.info("Recording engine restarted on new device")
+            LogStore.shared.log("Recording engine restarted successfully (isRunning: \(engine.isRunning))", category: .voiceEnrollment)
+        } catch {
+            logger.error("Failed to restart recording engine: \(error.localizedDescription)")
+            LogStore.shared.log("Failed to restart recording engine: \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
+            // Fall back to silence detected so user can try again
+            recordedSamples.removeAll()
+            recordingStartDate = nil
+            peakLevel = 0
+            state = .silenceDetected
             startPreview()
         }
     }
@@ -424,12 +581,7 @@ final class VoiceEnrollmentManager: ObservableObject {
     /// Stop recording due to silence and transition to the silenceDetected state.
     private func autoStopForSilence() {
         LogStore.shared.log("Auto-stopping enrollment recording due to silence (\(String(format: "%.1f", silenceAutoStopDelay))s of silence detected)", category: .voiceEnrollment, level: .warning)
-        durationTimer?.invalidate()
-        durationTimer = nil
-
-        recordingEngine?.stop()
-        recordingEngine?.inputNode.removeTap(onBus: 0)
-        recordingEngine = nil
+        stopRecordingEngine()
         recordingStartDate = nil
 
         // Discard the silent recording — don't store it as a clip
@@ -440,7 +592,7 @@ final class VoiceEnrollmentManager: ObservableObject {
         state = .silenceDetected
         LogStore.shared.log("Transitioned to silenceDetected state. Restarting preview.", category: .voiceEnrollment)
 
-        // Restart preview so user can see if changing mic fixes things
+        // Restart preview so user can see if the mic starts working
         startPreview()
     }
 
@@ -450,12 +602,7 @@ final class VoiceEnrollmentManager: ObservableObject {
     /// was valid and stored, `false` on error.
     func stopRecording() async -> Bool {
         LogStore.shared.log("Stopping enrollment recording (samples collected: \(recordedSamples.count))", category: .voiceEnrollment)
-        durationTimer?.invalidate()
-        durationTimer = nil
-
-        recordingEngine?.stop()
-        recordingEngine?.inputNode.removeTap(onBus: 0)
-        recordingEngine = nil
+        stopRecordingEngine()
         recordingStartDate = nil
         silenceWarningActive = false
         continuousSilenceDuration = 0
@@ -542,11 +689,7 @@ final class VoiceEnrollmentManager: ObservableObject {
 
     /// Cancel any in-progress recording and return to ready.
     func cancel() {
-        durationTimer?.invalidate()
-        durationTimer = nil
-        recordingEngine?.stop()
-        recordingEngine?.inputNode.removeTap(onBus: 0)
-        recordingEngine = nil
+        stopRecordingEngine()
         stopPreview()
         recordedSamples.removeAll()
         recordingStartDate = nil
@@ -561,6 +704,7 @@ final class VoiceEnrollmentManager: ObservableObject {
     func cleanup() {
         cancel()
         stopPreview()
+        stopObservingDefaultDevice()
         collectedClips.removeAll()
         clipCount = 0
         state = .idle
