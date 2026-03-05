@@ -5,9 +5,9 @@ coordination:
     max_daily_session_minutes: 120
     max_wakes_per_day: 12
     max_wakes_per_pair_per_day: 5
-executor_model: ''
+executor_model: openrouter/anthropic/claude-sonnet-4.6
 model: openrouter/x-ai/grok-4.1-fast
-planning_model: ''
+planning_model: openrouter/anthropic/claude-sonnet-4.6
 pulse_blackouts:
 - end_time: 07:00
   label: Nighttime

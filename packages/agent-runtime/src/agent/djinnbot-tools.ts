@@ -19,6 +19,7 @@ import { createTelegramTools } from './djinnbot-tools/telegram.js';
 import { createWhatsAppTools } from './djinnbot-tools/whatsapp.js';
 import { createSignalTools } from './djinnbot-tools/signal.js';
 import { createSpawnExecutorTools } from './djinnbot-tools/spawn-executor.js';
+import { createExecutorControlTools } from './djinnbot-tools/executor-control.js';
 import { createSwarmExecutorTools } from './djinnbot-tools/swarm-executor.js';
 import { createWorkLedgerTools } from './djinnbot-tools/work-ledger.js';
 import { createRunHistoryTools } from './djinnbot-tools/run-history.js';
@@ -60,6 +61,14 @@ export interface DjinnBotToolsConfig {
    */
   isPulseSession?: boolean;
   /**
+   * Whether this container is running an executor session
+   * (SESSION_SOURCE=executor). Executor sessions are autonomous coding
+   * sessions that should NOT have step-control (complete/fail), pulse
+   * planning tools (spawn_executor, pulse-projects), or work dispatch
+   * tools. They just do their coding work and exit.
+   */
+  isExecutorSession?: boolean;
+  /**
    * Whether this container is running an onboarding session
    * (ONBOARDING_SESSION_ID env var is set).
    * Onboarding tools are included only when true.
@@ -75,18 +84,29 @@ export function createDjinnBotTools(config: DjinnBotToolsConfig): AgentTool[] {
     onComplete, onFail, pulseColumns,
     isPipelineRun = false,
     isPulseSession = false,
+    isExecutorSession = false,
     isOnboardingSession = false,
     retrievalTracker,
   } = config;
 
-  // Chat sessions are anything that isn't a pipeline run, pulse session, or onboarding session.
-  // These are user-facing conversations via dashboard, WhatsApp, Signal, Slack, Discord, Telegram.
-  // Pipeline/pulse-only tools (step control, executors, work ledger) are excluded from chat.
-  const isChatSession = !isPipelineRun && !isPulseSession && !isOnboardingSession;
+  // Chat-style sessions: no step-control tools, no auto-continuation.
+  // Pipeline + executor + onboarding sessions have step-control and auto-continuation.
+  // Pulse sessions are chat-style (planner does its work and ends naturally).
+  //
+  // Pipeline/Onboarding → complete/fail (step-control.ts)
+  // Executor → executor_complete/executor_fail (executor-control.ts)
+  // Pulse/Chat → no step control (session ends when model stops)
+  const isChatSession = !isPipelineRun && !isExecutorSession && !isOnboardingSession;
 
   return [
-    // Step control (complete/fail) — pipeline/pulse only; meaningless in chat sessions
-    ...(!isChatSession ? createStepControlTools({ onComplete, onFail }) : []),
+    // Step control (complete/fail) — pipeline runs only
+    ...(isPipelineRun ? createStepControlTools({ onComplete, onFail }) : []),
+
+    // Executor control (executor_complete/executor_fail) — executor sessions only.
+    // Stores structured outputs on the Run record AND signals session end.
+    ...(isExecutorSession ? createExecutorControlTools({
+      onComplete, onFail, apiBaseUrl, runId: sessionId,
+    }) : []),
 
     ...createMemoryTools({ publisher, agentId, vaultPath, apiBaseUrl, retrievalTracker }),
 
@@ -114,16 +134,21 @@ export function createDjinnBotTools(config: DjinnBotToolsConfig): AgentTool[] {
 
     ...createSignalTools({ agentId, apiBaseUrl }),
 
-    // Pulse/pipeline tools — always included (chat, pipeline, and pulse sessions)
-    ...createPulseProjectsTools({ agentId, apiBaseUrl, pulseColumns }),
+    // Pulse/pipeline tools — included for all sessions EXCEPT executors.
+    // Executors are autonomous coding sessions that should only have coding tools,
+    // not planning/dispatch tools. They don't need to query projects, manage tasks,
+    // or spawn other executors.
+    ...(!isExecutorSession ? createPulseProjectsTools({ agentId, apiBaseUrl, pulseColumns }) : []),
 
-    ...createPulseTasksTools({ agentId, apiBaseUrl }),
+    ...(!isExecutorSession ? createPulseTasksTools({ agentId, apiBaseUrl }) : []),
 
     // Spawn executor — available in pulse sessions for plan-then-execute workflow
-    ...createSpawnExecutorTools({ publisher, requestIdRef, agentId, apiBaseUrl }),
+    // (excluded from executors — they should not spawn other executors)
+    ...(!isExecutorSession ? createSpawnExecutorTools({ publisher, requestIdRef, agentId, apiBaseUrl }) : []),
 
     // Swarm executor — parallel multi-task execution with dependency DAG
-    ...createSwarmExecutorTools({ publisher, requestIdRef, agentId, apiBaseUrl }),
+    // (excluded from executors)
+    ...(!isExecutorSession ? createSwarmExecutorTools({ publisher, requestIdRef, agentId, apiBaseUrl }) : []),
 
     // Run history — execution memory for learning from past attempts
     ...createRunHistoryTools({ agentId, apiBaseUrl }),

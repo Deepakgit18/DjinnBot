@@ -1477,6 +1477,7 @@ export interface PulseRoutine {
   tools: string[] | null;
   planningModel: string | null;
   executorModel: string | null;
+  executorTimeoutSec: number | null;
   sortOrder: number;
   lastRunAt: number | null;
   totalRuns: number;
@@ -1500,6 +1501,7 @@ export interface CreatePulseRoutineRequest {
   color?: string;
   planningModel?: string;
   executorModel?: string;
+  executorTimeoutSec?: number;
 }
 
 export interface UpdatePulseRoutineRequest {
@@ -1518,6 +1520,7 @@ export interface UpdatePulseRoutineRequest {
   color?: string;
   planningModel?: string;
   executorModel?: string;
+  executorTimeoutSec?: number;
 }
 
 export async function fetchPulseRoutines(agentId: string): Promise<{ routines: PulseRoutine[] }> {

@@ -584,9 +584,19 @@ export class SignalBridge {
         try {
           const attachmentPath = join(signalDataDir, 'attachments', a.id);
           const buffer = await readFile(attachmentPath);
+
+          // Normalize MIME type: Signal voice notes may arrive as
+          // 'application/ogg' which downstream code doesn't recognise as audio.
+          // Map it to 'audio/ogg' so transcription and the attachment pipeline
+          // handle it correctly.
+          let mimeType = a.contentType || 'application/octet-stream';
+          if (mimeType === 'application/ogg') {
+            mimeType = 'audio/ogg';
+          }
+
           rawFiles.push({
             name: a.filename || `attachment_${a.id}`,
-            mimeType: a.contentType || 'application/octet-stream',
+            mimeType,
             buffer,
           });
         } catch (err) {

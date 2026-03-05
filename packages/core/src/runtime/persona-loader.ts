@@ -9,7 +9,7 @@ export interface StepContext {
 }
 
 export interface SessionContext {
-  sessionType: 'slack' | 'pulse' | 'pipeline' | 'chat' | 'wake';
+  sessionType: 'slack' | 'pulse' | 'pipeline' | 'chat' | 'wake' | 'executor';
   runId?: string;
   channelContext?: string;
   installedTools?: string[];

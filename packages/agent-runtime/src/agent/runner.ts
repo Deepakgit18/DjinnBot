@@ -601,16 +601,33 @@ export class ContainerAgentRunner {
     //   'run_*'        → pipeline step (agent executing a task in a pipeline)
     //   'standalone_*' → pulse/standalone session (agent discovering and dispatching work)
     //   anything else  → plain chat session
+    // SESSION_SOURCE further distinguishes standalone sessions:
+    //   'executor'     → autonomous coding session (no step-control, no planning tools)
+    //   'pulse'        → planner session (has step-control, planning, and dispatch tools)
     const runId = process.env.RUN_ID || '';
+    const sessionSource = process.env.SESSION_SOURCE || '';
     const isPipelineRun = runId.startsWith('run_');
-    const isPulseSession = runId.startsWith('standalone_');
+    // Executor sessions: spawned to do actual coding work. They get
+    // executor_complete/executor_fail tools + auto-continuation nudging
+    // (to push toward calling executor_complete). NO pipeline tools, NO
+    // pulse planning tools.
+    const isExecutorSession = runId.startsWith('pulse_exec_') || sessionSource === 'executor';
+    // Pulse sessions: planners that discover and dispatch work. They are
+    // chat-style — no step-control, no auto-continuation. They do their
+    // planning work and the session ends when the model stops.
+    const isPulseSession = runId.startsWith('pulse_plan_')
+      || (runId.startsWith('standalone_') && sessionSource === 'pulse')
+      || (runId.startsWith('standalone_') && !isExecutorSession && sessionSource !== 'executor');
     const isOnboardingSession = Boolean(process.env.ONBOARDING_SESSION_ID);
 
-    const isChatSession = !isPipelineRun && !isPulseSession && !isOnboardingSession;
+    // Chat-style sessions: no step-control tools, no auto-continuation.
+    // Pipeline runs have complete/fail. Executor runs have executor_complete/executor_fail.
+    // Everything else (pulse, onboarding, chat) ends naturally when the model stops.
+    const isChatSession = !isPipelineRun && !isExecutorSession;
     this.isChatSession = isChatSession;
 
     console.log(
-      `[AgentRunner] Session context: isPipelineRun=${isPipelineRun}, isPulseSession=${isPulseSession}, isOnboardingSession=${isOnboardingSession}, isChatSession=${isChatSession}`,
+      `[AgentRunner] Session context: isPipelineRun=${isPipelineRun}, isPulseSession=${isPulseSession}, isExecutorSession=${isExecutorSession}, isOnboardingSession=${isOnboardingSession}, isChatSession=${isChatSession} (source=${sessionSource})`,
     );
 
     const tools: AgentTool[] = [];
@@ -643,6 +660,7 @@ export class ContainerAgentRunner {
       pulseColumns,
       isPipelineRun,
       isPulseSession,
+      isExecutorSession,
       isOnboardingSession,
       retrievalTracker: this.retrievalTracker,
       onComplete: (outputs, summary) => {
@@ -795,13 +813,13 @@ export class ContainerAgentRunner {
         // causing N unnecessary LLM round-trips (where N = number of
         // previous tool-call turns).
         //
-        // Correct strategy:
+         // Correct strategy:
         //  • Tool-call turn → do nothing (inner loop handles continuation)
-        //  • Text-only turn in a chat session → do nothing (text IS the
-        //    completion; chat sessions have no complete/fail tools)
-        //  • Text-only turn in a pipeline/pulse/onboarding run → queue
-        //    ONE followUp, because the model should have called
-        //    complete()/fail() and may have stopped prematurely.
+        //  • Text-only turn in a chat/pulse session → do nothing (text IS
+        //    the completion; these sessions have no step-control tools)
+        //  • Text-only turn in a pipeline/executor/onboarding run → queue
+        //    ONE followUp, because the model should have called the
+        //    appropriate completion tool and may have stopped prematurely.
         //
         // Every ~50 tool calls we ask for a progress update so the user
         // isn't left staring at a spinner with no feedback.
@@ -812,12 +830,16 @@ export class ContainerAgentRunner {
           !this.isChatSession &&
           this.autoContinuations < this.maxAutoContinuations
         ) {
-          // Model produced text but didn't call complete/fail in a
-          // pipeline/pulse/onboarding run.  Nudge it to keep working.
+          // Model produced text but didn't call the completion tool.
+          // Nudge it to keep working. Use session-appropriate tool names.
           this.autoContinuations++;
 
-          const prompt = 'Continue — you produced a response but didn\'t call complete() or fail(). ' +
-            'Keep working. If you are done, call complete() with your results.';
+          const isExecutor = process.env.SESSION_SOURCE === 'executor'
+            || (process.env.RUN_ID || '').startsWith('pulse_exec_');
+          const completeTool = isExecutor ? 'executor_complete()' : 'complete()';
+          const failTool = isExecutor ? 'executor_fail()' : 'fail()';
+          const prompt = `Continue — you produced a response but didn't call ${completeTool} or ${failTool}. ` +
+            `Keep working. If you are done, call ${completeTool} with your results.`;
 
           console.log(
             `[AgentRunner] Auto-continuation ${this.autoContinuations}/${this.maxAutoContinuations}: ` +

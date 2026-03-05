@@ -11,10 +11,18 @@ export interface StandaloneSessionOptions {
   userPrompt: string;
   model: string;
   workspacePath?: string;
+  /** Absolute path to the run's git worktree (e.g. /jfs/runs/run_xxx).
+   *  Mounted as /home/agent/run-workspace in the container. */
+  runWorkspacePath?: string;
+  /** Absolute path to the project's main git repo (e.g. /jfs/workspaces/proj_xxx).
+   *  Mounted as /home/agent/project-workspace in the container. */
+  projectWorkspacePath?: string;
+  /** Project ID — used for code graph queries and workspace resolution. */
+  projectId?: string;
   vaultPath?: string;
   maxTurns?: number;
   timeout?: number;
-  source?: 'slack_dm' | 'slack_channel' | 'api' | 'pulse' | 'wake';
+  source?: 'slack_dm' | 'slack_channel' | 'api' | 'pulse' | 'wake' | 'executor';
   sourceId?: string;
   /** Kanban column names this agent is allowed to work from (passed to pulse tools). */
   pulseColumns?: string[];
@@ -22,8 +30,15 @@ export interface StandaloneSessionOptions {
   taskWorkTypes?: string[];
   /** Executor model for spawn_executor — passed to container as EXECUTOR_MODEL env var. */
   executorModel?: string;
+  /** Executor timeout in seconds — passed to container as EXECUTOR_TIMEOUT_SEC env var.
+   *  Controls how long spawned executor sessions run. Also used as work lock TTL. */
+  executorTimeoutSec?: number;
   /** DjinnBot user whose API keys are used for this session (per-user key resolution). */
   userId?: string;
+  /** Explicit session ID override. When set, used instead of the auto-generated ID.
+   *  Executor sessions pass the DB run ID here so the container's RUN_ID matches
+   *  the Run record, allowing executor_complete to store outputs via the API. */
+  sessionId?: string;
 }
 
 export interface StandaloneSessionResult {
@@ -48,14 +63,21 @@ export class StandaloneSessionRunner {
 
   async runSession(opts: StandaloneSessionOptions): Promise<StandaloneSessionResult> {
     const sessionTimestamp = Date.now();
-    const sessionId = `standalone_${opts.agentId}_${sessionTimestamp}`;
+    const source = opts.source || 'api';
+    // Use explicit sessionId if provided (executor sessions use the DB run ID).
+    // Otherwise, generate a prefix based on source type:
+    //   pulse  → pulse_plan_{agentId}_{timestamp}
+    //   other  → standalone_{agentId}_{timestamp}
+    const sessionId = opts.sessionId
+      || (source === 'pulse'
+        ? `pulse_plan_${opts.agentId}_${sessionTimestamp}`
+        : `standalone_${opts.agentId}_${sessionTimestamp}`);
     const stepId = `STANDALONE_${sessionTimestamp}`;
 
     console.log(`[StandaloneSessionRunner] Starting session ${sessionId} for ${opts.agentId}`);
 
     // Record session started in the agent's activity timeline (skip 'pulse' — AgentPulse
     // records pulse_started/complete separately with richer context).
-    const source = opts.source || 'api';
     if (this.config.lifecycleTracker && source !== 'pulse') {
       this.config.lifecycleTracker.recordSessionStarted(
         opts.agentId,
@@ -107,13 +129,18 @@ export class StandaloneSessionRunner {
         userPrompt: opts.userPrompt,
         model: opts.model,
         workspacePath,
+        runWorkspacePath: opts.runWorkspacePath,
+        projectWorkspacePath: opts.projectWorkspacePath,
+        projectId: opts.projectId,
         vaultPath,
         maxTurns: opts.maxTurns || 999,
         timeout: opts.timeout || 120000,
         pulseColumns: opts.pulseColumns,
         taskWorkTypes: opts.taskWorkTypes,
         executorModel: opts.executorModel,
+        executorTimeoutSec: opts.executorTimeoutSec,
         userId: opts.userId,
+        source: opts.source,
       });
 
       console.log(`[StandaloneSessionRunner] Session ${sessionId} completed`);

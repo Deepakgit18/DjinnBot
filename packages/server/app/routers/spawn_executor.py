@@ -301,7 +301,7 @@ async def spawn_executor(
     )
 
     # Create the run — uses 'execute' pipeline (single-step, minimal overhead)
-    run_id = gen_id("run_")
+    run_id = gen_id("pulse_exec_")
 
     # Look up project workspace_type to propagate to the run
     project_workspace_type: str | None = None
@@ -319,6 +319,7 @@ async def spawn_executor(
         id=run_id,
         pipeline_id="execute",
         project_id=req.project_id,
+        task_id=req.task_id,
         task_description=enriched_prompt,
         status="pending",
         outputs="{}",

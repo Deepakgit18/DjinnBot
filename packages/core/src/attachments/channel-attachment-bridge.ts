@@ -35,6 +35,7 @@ export interface ProcessedAttachment {
 const PROCESSABLE_MIME_PREFIXES = [
   'image/',
   'audio/',
+  'application/ogg',   // OGG container — often audio (voice notes from Signal/Telegram)
   'application/pdf',
   'text/',
   'application/json',

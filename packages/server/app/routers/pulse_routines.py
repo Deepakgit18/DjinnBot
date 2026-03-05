@@ -80,6 +80,9 @@ class CreatePulseRoutineRequest(BaseModel):
     color: Optional[str] = None
     planningModel: Optional[str] = None
     executorModel: Optional[str] = None
+    # Executor timeout in seconds. Separate from timeoutMs (planner timeout).
+    # Work lock TTL is automatically set to match this value.
+    executorTimeoutSec: Optional[int] = Field(default=None, ge=30, le=3600)
     # Per-routine tool selection. When null → inherit agent defaults.
     # When set → only these tools are available during this routine.
     tools: Optional[List[str]] = None
@@ -104,6 +107,7 @@ class UpdatePulseRoutineRequest(BaseModel):
     color: Optional[str] = None
     planningModel: Optional[str] = None
     executorModel: Optional[str] = None
+    executorTimeoutSec: Optional[int] = Field(default=None, ge=30, le=3600)
     tools: Optional[List[str]] = None
     stageAffinity: Optional[List[str]] = None
     taskWorkTypes: Optional[List[str]] = None
@@ -161,6 +165,7 @@ def _model_to_response(r: PulseRoutine) -> dict:
         "pulseColumns": r.pulse_columns,
         "planningModel": r.planning_model,
         "executorModel": r.executor_model,
+        "executorTimeoutSec": r.executor_timeout_sec,
         "tools": r.tools,
         "stageAffinity": r.stage_affinity,
         "taskWorkTypes": r.task_work_types,
@@ -277,6 +282,7 @@ async def create_pulse_routine(
         pulse_columns=req.pulseColumns,
         planning_model=req.planningModel,
         executor_model=req.executorModel,
+        executor_timeout_sec=req.executorTimeoutSec,
         tools=req.tools,
         stage_affinity=req.stageAffinity,
         task_work_types=req.taskWorkTypes,
@@ -383,6 +389,8 @@ async def update_pulse_routine(
         update_fields["executor_model"] = (
             req.executorModel or None
         )  # empty string → null
+    if req.executorTimeoutSec is not None:
+        update_fields["executor_timeout_sec"] = req.executorTimeoutSec or None
     if req.tools is not None:
         update_fields["tools"] = req.tools if req.tools else None  # empty list → null
     if req.stageAffinity is not None:

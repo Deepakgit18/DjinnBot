@@ -59,7 +59,7 @@ const SpawnExecutorParamsSchema = Type.Object({
   ),
   timeoutSeconds: Type.Optional(
     Type.Number({
-      description: 'Max execution time in seconds (default 300, max 600)',
+      description: 'Max execution time in seconds. Defaults to the routine executor timeout (EXECUTOR_TIMEOUT_SEC env), or 300s. Max 3600s.',
     })
   ),
 });
@@ -428,7 +428,10 @@ export function createPulseTools(
             project_id: typedParams.projectId,
             task_id: typedParams.taskId,
             execution_prompt: executionPrompt,
-            timeout_seconds: Math.min(typedParams.timeoutSeconds || 300, 600),
+            timeout_seconds: Math.min(
+              typedParams.timeoutSeconds || parseInt(process.env.EXECUTOR_TIMEOUT_SEC || '300', 10),
+              3600,
+            ),
           };
 
           const response = await authFetch(url, {
@@ -444,6 +447,10 @@ export function createPulseTools(
           }
 
           const data = (await response.json()) as { run_id?: string; memory_injection?: boolean };
+          const effectiveTimeout = Math.min(
+            typedParams.timeoutSeconds || parseInt(process.env.EXECUTOR_TIMEOUT_SEC || '300', 10),
+            3600,
+          );
 
           return {
             content: [{
@@ -453,10 +460,13 @@ export function createPulseTools(
                 ``,
                 `**Run ID**: ${data.run_id}`,
                 `**Task**: ${typedParams.taskId}`,
+                `**Timeout**: ${effectiveTimeout}s`,
                 `**Memory injection**: ${data.memory_injection ? 'yes (past lessons included)' : 'no'}`,
                 ``,
                 `The executor is now running asynchronously in its own container with a git worktree.`,
                 `It will commit and push when done. Use get_task_context to check progress.`,
+                ``,
+                `**Set your work lock TTL to ${effectiveTimeout}s to match the executor timeout.**`,
               ].join('\n'),
             }],
             details: {},

@@ -156,6 +156,9 @@ export interface PulseRoutine {
   /** Per-routine model overrides (null = inherit from agent config) */
   planningModel?: string;
   executorModel?: string;
+  /** Executor timeout in seconds. Separate from timeoutMs (planner timeout).
+   *  Work lock TTL should match this value. Default: 300 (5 min). */
+  executorTimeoutSec?: number;
 
   /** Display */
   sortOrder: number;

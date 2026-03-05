@@ -827,6 +827,20 @@ async def update_settings(
         else:
             session.add(GlobalSetting(key=key, value=value, updated_at=now))
     await session.commit()
+
+    # Notify the engine when the pulse master switch changes so it takes
+    # effect immediately without requiring an engine restart.
+    try:
+        from app import dependencies
+
+        if dependencies.redis_client:
+            await dependencies.redis_client.publish(
+                "djinnbot:settings:pulse-master",
+                json.dumps({"pulseEnabled": settings.pulseEnabled}),
+            )
+    except Exception:
+        pass  # Non-fatal — engine will pick it up on next settings fetch
+
     return settings
 
 

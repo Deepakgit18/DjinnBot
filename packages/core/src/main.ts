@@ -145,10 +145,27 @@ async function processNewRun(data: { event: string; run_id: string; pipeline_id:
       console.error(`[Engine] Run ${runId} not found in API`);
       return;
     }
-    
-    // Resume the run (taskDescription is already in the run record)
-    await djinnBot.resumeRun(runId);
-    console.log(`[Engine] Run ${runId} started successfully`);
+
+    // Detect executor runs — these are standalone sessions, NOT pipeline runs.
+    // Route them to the dedicated handler that sets up workspace + mounts directly.
+    // Detected by pulse_exec_ prefix (new convention) or humanContext flag (backward compat).
+    let isSpawnExecutor = runId.startsWith('pulse_exec_');
+    if (!isSpawnExecutor) {
+      try {
+        const meta = run.humanContext ? JSON.parse(run.humanContext) : {};
+        isSpawnExecutor = meta.spawn_executor === true;
+      } catch {}
+    }
+
+    if (isSpawnExecutor) {
+      console.log(`[Engine] Routing ${runId} to executor handler (standalone session)`);
+      await djinnBot.handleSpawnExecutorRun(runId);
+      console.log(`[Engine] Executor run ${runId} completed`);
+    } else {
+      // Pipeline run — route through PipelineEngine as normal
+      await djinnBot.resumeRun(runId);
+      console.log(`[Engine] Pipeline run ${runId} started successfully`);
+    }
   } catch (err) {
     console.error(`[Engine] Error processing run ${runId}:`, err);
   }

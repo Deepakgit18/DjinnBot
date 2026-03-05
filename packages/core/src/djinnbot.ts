@@ -83,6 +83,8 @@ export class DjinnBot {
   private taskRunTracker: TaskRunTracker | null = null;
   private redis?: Redis;
   private sessionPersister?: SessionPersister;
+  /** Tracks the global pulse master switch (from admin settings). */
+  private _pulseEnabled: boolean = true;
 
   private workspaceManager: IWorkspaceManager;
   private workspaceManagerFactory: WorkspaceManagerFactory;
@@ -792,6 +794,8 @@ export class DjinnBot {
 
     // Phase 9a: Start wake system (independent of pulse)
     const rs = this.config.runtimeSettings ?? DEFAULT_RUNTIME_SETTINGS;
+    // Initialize the global pulse master switch from runtime settings
+    this._pulseEnabled = rs.pulseEnabled;
     this.agentWake = new AgentWake(
       {
         redisUrl: this.config.redisUrl,
@@ -838,6 +842,7 @@ export class DjinnBot {
         endPulseSession: (agentId, sessionId) => this.lifecycleManager.endPulseSession(agentId, sessionId),
         maxConcurrentPulseSessions: rs.maxConcurrentPulseSessions,
         onRoutinePulseComplete: (routineId) => this.updateRoutineStats(routineId),
+        isGlobalPulseEnabled: () => this.isGlobalPulseEnabled(),
       },
     );
     await this.agentPulse.start();
@@ -873,6 +878,20 @@ export class DjinnBot {
   /** Expose the workspace manager factory for per-project resolution. */
   getWorkspaceManagerFactory(): WorkspaceManagerFactory {
     return this.workspaceManagerFactory;
+  }
+
+  /** Check whether the global pulse master switch is enabled. */
+  private isGlobalPulseEnabled(): boolean {
+    return this._pulseEnabled;
+  }
+
+  /** Update the global pulse master switch (called when admin settings change). */
+  setGlobalPulseEnabled(enabled: boolean): void {
+    const changed = this._pulseEnabled !== enabled;
+    this._pulseEnabled = enabled;
+    if (changed) {
+      console.log(`[DjinnBot] Global pulse master switch ${enabled ? 'ENABLED' : 'DISABLED'}`);
+    }
   }
 
   /** Get the pulse timeline for all agents */
@@ -997,6 +1016,10 @@ export class DjinnBot {
             console.log(`[DjinnBot] Manual trigger for routine ${routineName || routineId}`);
             await this.agentPulse.triggerRoutine(agentId, routineId);
           }
+        } else if (channel === 'djinnbot:settings:pulse-master') {
+          // Global pulse master switch toggled from admin settings
+          const enabled = data.pulseEnabled === true;
+          this.setGlobalPulseEnabled(enabled);
         }
       } catch (err) {
         console.error('[DjinnBot] Failed to process pulse schedule update:', err);
@@ -1008,6 +1031,7 @@ export class DjinnBot {
       'djinnbot:pulse:offsets-updated',
       'djinnbot:pulse:routine-updated',
       'djinnbot:pulse:trigger-routine',
+      'djinnbot:settings:pulse-master',
     );
     console.log('[DjinnBot] Subscribed to pulse schedule update channels');
   }
@@ -1125,16 +1149,46 @@ export class DjinnBot {
         || agent?.config?.model
         || 'openrouter/minimax/minimax-m2.5';
 
-      // Determine timeout: routine override > agent config > admin default
-      const timeout = context.routineTimeoutMs
-        ?? agent?.config?.pulseContainerTimeoutMs
-        ?? (this.config.runtimeSettings?.defaultPulseTimeoutSec ?? 120) * 1000;
-
       // Executor model resolution: routine.executorModel → agent.executorModel → agent.model → fallback
       const executorModel = context.routineExecutorModel
         || agent?.config?.executorModel
         || agent?.config?.model
         || 'openrouter/minimax/minimax-m2.5';
+
+      // Executor timeout: routine override → default 300s
+      const executorTimeoutSec = context.routineExecutorTimeoutSec || 300;
+
+      // Enforce planner timeout = 2x executor timeout. The planner blocks while
+      // spawn_executor polls, so it must outlive the executor plus have headroom
+      // for pre/post work (discovering tasks, opening PRs, transitioning tasks).
+      const timeout = executorTimeoutSec * 2 * 1000;
+
+      // Resolve project workspace for pulse session — mount the project's git
+      // repo so the agent can inspect in-progress task worktrees and code state.
+      let projectWorkspacePath: string | undefined;
+      let pulseProjectId: string | undefined;
+      if (context.assignedTasks && context.assignedTasks.length > 0) {
+        // Use the first assigned task's project to determine the workspace.
+        // The fetchAssignedTasks call already resolved project names; we need the ID.
+        // Look up via the agent's projects API.
+        try {
+          const apiUrl = process.env.DJINNBOT_API_URL || 'http://api:8000';
+          const projectsRes = await authFetch(`${apiUrl}/v1/agents/${agentId}/projects`);
+          if (projectsRes.ok) {
+            const rawProjects = await projectsRes.json() as any;
+            const projects: Array<{ project_id: string }> =
+              Array.isArray(rawProjects) ? rawProjects : (rawProjects.projects || []);
+            if (projects.length > 0) {
+              const workspacesDir = process.env.WORKSPACES_DIR || '/jfs/workspaces';
+              pulseProjectId = projects[0].project_id;
+              projectWorkspacePath = `${workspacesDir}/${pulseProjectId}`;
+              console.log(`[DjinnBot] Pulse session for ${label}: mounting project workspace ${projectWorkspacePath}`);
+            }
+          }
+        } catch (err) {
+          console.warn(`[DjinnBot] Failed to resolve pulse project workspace for ${agentId}:`, err);
+        }
+      }
 
       // Run standalone session
       const result = await this.sessionRunner.runSession({
@@ -1142,12 +1196,15 @@ export class DjinnBot {
         systemPrompt,
         userPrompt,
         model,
+        projectWorkspacePath,
+        projectId: pulseProjectId,
         maxTurns: 999,
         timeout,
         source: 'pulse',
         pulseColumns,
         taskWorkTypes: context.routineTaskWorkTypes,
         executorModel,
+        executorTimeoutSec,
       });
 
       console.log(`[DjinnBot] Pulse session for ${label} completed: ${result.success}`);
@@ -1235,6 +1292,10 @@ export class DjinnBot {
         timeoutMs: r.timeoutMs,
         maxConcurrent: r.maxConcurrent ?? 1,
         pulseColumns: r.pulseColumns,
+        planningModel: r.planningModel,
+        executorModel: r.executorModel,
+        executorTimeoutSec: r.executorTimeoutSec,
+        tools: r.tools,
         stageAffinity: r.stageAffinity,
         taskWorkTypes: r.taskWorkTypes,
         sortOrder: r.sortOrder ?? 0,
@@ -1265,23 +1326,9 @@ export class DjinnBot {
     });
   }
 
+  /** @deprecated Default instructions removed — all pulse sessions must use routine-provided instructions. */
   private getDefaultPulsePrompt(): string {
-    return `# Pulse Routine
-
-You are an autonomous AI agent. This is your pulse wake-up routine.
-
-## Your Task
-1. Check your inbox for messages
-2. Use recall to search for recent context
-3. Take action on urgent items
-4. Provide a summary of your findings
-
-## Output Format
-Provide a brief summary with:
-- Inbox status
-- Memories reviewed
-- Actions taken
-- Recommended next steps`;
+    return '';
   }
 
   private buildPulseUserPrompt(
@@ -1323,38 +1370,7 @@ ${tasksSection}
 - **Run Workspace**: \`/home/agent/run-workspace/\` (your working directory)
 - **Memory**: \`/home/agent/clawvault/\` (use \`recall\` tool, don't access directly)
 
-## Pulse Routine
-
-Execute the following steps:
-
-**1. Context check (1 turn)**
-- Use \`recall\` to surface recent handoffs, decisions, or urgent items from memory.
-- Review inbox messages above.
-
-**2. Task discovery (1 turn per project)**
-- Call \`get_my_projects\` to list your projects.
-- For each active project, call \`get_ready_tasks\`. The response contains:
-  - \`in_progress\`: what you are already working on (with their downstream dependents).
-  - \`tasks\`: ready candidates (with \`blocking_tasks\` showing what each one unlocks downstream).
-
-**3. Parallel task selection**
-A ready task is **safe to run in parallel** with your in-progress work if:
-- Its \`blocking_tasks\` list does NOT contain any of your \`in_progress\` task IDs (no ordering conflict).
-- It is in \`ready\`, \`backlog\`, or \`planning\` status (not already running).
-
-Pick **up to 2 independent tasks** that pass the above check, prioritising P0 > P1 > P2 > P3.
-If a task is unassigned, call \`claim_task\` first, then \`execute_task\`.
-If it is already assigned to you, call \`execute_task\` directly.
-
-**4. Respond to inbox** (if messages are urgent or require action)
-
-**5. Complete**
-Call \`complete\` with a summary: what you started, what is already running, any inbox actions taken.
-
-**Rules**:
-- Use \`recall\` for memories, not bash/find.
-- Do not start tasks that depend on each other — only independent branches in parallel.
-- Do not re-execute tasks already \`in_progress\` or \`review\`.
+${context.routineInstructions ? `## Routine: ${context.routineName || 'Custom'}\n\n${context.routineInstructions}` : '## No routine instructions configured\n\nThis pulse session has no instructions. Create a pulse routine with instructions for this agent.'}
 
 Start now.`;
   }
@@ -1769,6 +1785,148 @@ Start now.`;
     await this.engine.resumeRun(runId);
   }
   
+  /**
+   * Handle a spawn_executor run as a standalone session — NOT a pipeline run.
+   *
+   * 1. Fetches the run record to get projectId, taskBranch, taskDescription
+   * 2. Creates the git worktree directly via the workspace manager
+   * 3. Runs a standalone session with proper workspace mounts
+   * 4. Updates the run status when done
+   *
+   * This bypasses PipelineEngine entirely.
+   */
+  async handleSpawnExecutorRun(runId: string): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (!run) {
+      throw new Error(`Run ${runId} not found`);
+    }
+
+    // Parse spawn_executor metadata from human_context
+    let meta: any = {};
+    try {
+      meta = run.humanContext ? JSON.parse(run.humanContext) : {};
+    } catch {}
+
+    const agentId = meta.planner_agent_id || 'yukihiro';
+    const projectId = run.projectId || meta.project_id;
+    const taskBranch = run.taskBranch;
+    const timeoutMs = (meta.timeout_seconds || 300) * 1000;
+
+    console.log(`[DjinnBot] handleSpawnExecutorRun: ${runId} agent=${agentId} project=${projectId} branch=${taskBranch}`);
+
+    // Mark run as running
+    await this.store.updateRun(runId, { status: 'running', updatedAt: Date.now() });
+
+    // ── Step 1: Create workspace (git worktree) ──────────────────────────
+    const workspacesDir = process.env.WORKSPACES_DIR || '/jfs/workspaces';
+    const runsDir = process.env.SHARED_RUNS_DIR || '/jfs/runs';
+    let runWorkspacePath: string | undefined;
+    let projectWorkspacePath: string | undefined;
+
+    if (projectId) {
+      projectWorkspacePath = `${workspacesDir}/${projectId}`;
+
+      try {
+        // If a task branch is specified, check if a worktree for it already exists
+        // (e.g. created by claim_task in the agent's sandbox). Git doesn't allow
+        // two worktrees on the same branch, so we reuse the existing one.
+        if (taskBranch) {
+          const existingWorktree = this.workspaceManager.findWorktreeForBranch?.(projectId, taskBranch);
+          if (existingWorktree) {
+            runWorkspacePath = existingWorktree;
+            console.log(`[DjinnBot] Reusing existing worktree for branch ${taskBranch}: ${existingWorktree}`);
+          }
+        }
+
+        // Only create a new worktree if we couldn't reuse an existing one
+        if (!runWorkspacePath) {
+          // Look up repo URL for the project
+          const apiUrl = process.env.DJINNBOT_API_URL || 'http://api:8000';
+          let repoUrl: string | undefined;
+          try {
+            const projRes = await authFetch(`${apiUrl}/v1/projects/${projectId}`);
+            if (projRes.ok) {
+              const projData = await projRes.json() as any;
+              repoUrl = projData.repository_url || projData.repo_url;
+            }
+          } catch {}
+
+          const workspaceInfo = await this.workspaceManager.createRunWorkspaceAsync(
+            projectId, runId, { repoUrl, taskBranch }
+          );
+          runWorkspacePath = `${runsDir}/${runId}`;
+          console.log(`[DjinnBot] Executor workspace created: ${workspaceInfo.runPath} (branch: ${workspaceInfo.metadata?.branch})`);
+        }
+      } catch (wsErr) {
+        const errMsg = `Workspace setup failed: ${wsErr instanceof Error ? wsErr.message : String(wsErr)}`;
+        console.error(`[DjinnBot] ${errMsg}`);
+        await this.store.updateRun(runId, { status: 'failed', updatedAt: Date.now(), completedAt: Date.now() });
+        return;
+      }
+    }
+
+    // ── Step 2: Build system prompt ──────────────────────────────────────
+    const persona = await this.personaLoader.loadPersonaForSession(agentId, {
+      sessionType: 'executor',
+    });
+
+    // ── Step 3: Resolve model ────────────────────────────────────────────
+    const agent = this.agentRegistry.get(agentId);
+    const model = run.modelOverride
+      || agent?.config?.executorModel
+      || agent?.config?.model
+      || 'openrouter/minimax/minimax-m2.5';
+
+    // ── Step 4: Run standalone session ───────────────────────────────────
+    if (!this.sessionRunner) {
+      console.error(`[DjinnBot] handleSpawnExecutorRun: session runner not initialized`);
+      await this.store.updateRun(runId, { status: 'failed', updatedAt: Date.now(), completedAt: Date.now() });
+      return;
+    }
+
+    try {
+      const result = await this.sessionRunner.runSession({
+        agentId,
+        sessionId: runId,  // Use DB run ID as container RUN_ID so executor_complete can reference it
+        systemPrompt: persona.systemPrompt,
+        userPrompt: run.taskDescription,
+        model,
+        runWorkspacePath,
+        projectWorkspacePath,
+        projectId,
+        timeout: timeoutMs,
+        maxTurns: 999,
+        source: 'executor',
+        sourceId: runId,
+        userId: run.userId,
+      });
+
+      // Mark run complete — check if executor_complete already stored outputs
+      const status = result.success ? 'completed' : 'failed';
+      const existingRun = await this.store.getRun(runId);
+      const existingOutputs = existingRun?.outputs ? (typeof existingRun.outputs === 'string' ? JSON.parse(existingRun.outputs) : existingRun.outputs) : {};
+      const hasOutputs = Object.keys(existingOutputs).length > 0;
+
+      await this.store.updateRun(runId, {
+        status,
+        updatedAt: Date.now(),
+        completedAt: Date.now(),
+        // If executor_complete was never called, store raw output as fallback
+        ...(!hasOutputs && result.output ? {
+          outputs: { raw_output: result.output.slice(0, 5000) } as Record<string, string>,
+        } : {}),
+      });
+      console.log(`[DjinnBot] Executor run ${runId} ${status} (outputs=${hasOutputs ? 'structured' : 'raw'}): ${result.output?.slice(0, 200)}`);
+    } catch (err) {
+      console.error(`[DjinnBot] Executor run ${runId} failed:`, err);
+      await this.store.updateRun(runId, {
+        status: 'failed',
+        updatedAt: Date.now(),
+        completedAt: Date.now(),
+      });
+    }
+  }
+
   // Get run status
   async getRun(runId: string): Promise<PipelineRun | null> {
     return await this.store.getRun(runId);

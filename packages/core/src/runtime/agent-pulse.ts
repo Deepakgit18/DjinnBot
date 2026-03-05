@@ -61,6 +61,12 @@ export interface PulseDependencies {
    * Called after a routine pulse completes to update stats (last_run_at, total_runs).
    */
   onRoutinePulseComplete?: (routineId: string) => void;
+  /**
+   * Check whether the global pulse master switch is enabled.
+   * When this returns false, ALL pulse execution is suppressed
+   * (both scheduled and manual triggers).
+   */
+  isGlobalPulseEnabled?: () => boolean;
 
 }
 
@@ -82,6 +88,9 @@ export interface PulseContext {
   routinePlanningModel?: string;
   /** Override executor model for this routine (passed to spawn_executor) */
   routineExecutorModel?: string;
+  /** Executor timeout in seconds — controls how long spawned executors run.
+   *  Also used as the work lock TTL. Passed to container as EXECUTOR_TIMEOUT_SEC. */
+  routineExecutorTimeoutSec?: number;
   /**
    * Per-routine tool selection. When set, only these tools should be
    * available to the agent during this pulse session.
@@ -433,6 +442,13 @@ export class AgentPulse {
     routineId?: string,
     routineName?: string,
   ): Promise<PulseResult> {
+    // --- Global kill switch ---
+    if (this.deps.isGlobalPulseEnabled && !this.deps.isGlobalPulseEnabled()) {
+      const label = routineName ? `${agentId}/${routineName}` : agentId;
+      console.log(`[AgentPulse] Global pulse master switch is OFF — skipping pulse for ${label}`);
+      return { agentId, routineId, routineName, skipped: true, unreadCount: 0, errors: ['Global pulse disabled'], scheduledAt, source };
+    }
+
     // --- Two-level concurrency gating ---
     
     // Level 1: Per-routine concurrency (if this is a routine pulse)
@@ -552,11 +568,13 @@ export class AgentPulse {
             const routines = await this.deps.getAgentPulseRoutines(agentId);
             const routine = routines.find(r => r.id === routineId);
             if (routine) {
+              context.routineName = context.routineName || routine.name;
               context.routineInstructions = routine.instructions;
               context.routinePulseColumns = routine.pulseColumns;
               context.routineTimeoutMs = routine.timeoutMs;
               context.routinePlanningModel = routine.planningModel;
               context.routineExecutorModel = routine.executorModel;
+              context.routineExecutorTimeoutSec = routine.executorTimeoutSec;
               context.routineTools = routine.tools;
               context.routineStageAffinity = routine.stageAffinity;
               context.routineTaskWorkTypes = routine.taskWorkTypes;

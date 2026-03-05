@@ -26,6 +26,11 @@ const GetReadyTasksParamsSchema = Type.Object({
 });
 type GetReadyTasksParams = Static<typeof GetReadyTasksParamsSchema>;
 
+const GetBoardColumnsParamsSchema = Type.Object({
+  projectId: Type.String({ description: 'Project ID to get the board columns for' }),
+});
+type GetBoardColumnsParams = Static<typeof GetBoardColumnsParamsSchema>;
+
 const GetProjectVisionParamsSchema = Type.Object({
   projectId: Type.String({ description: 'Project ID to get the vision for' }),
 });
@@ -252,6 +257,50 @@ export function createPulseProjectsTools(config: PulseProjectsToolsConfig): Agen
           };
         } catch (err) {
           return { content: [{ type: 'text', text: `Error fetching ready tasks: ${err instanceof Error ? err.message : String(err)}` }], details: {} };
+        }
+      },
+    },
+
+    {
+      name: 'get_board_columns',
+      description:
+        'Get the kanban board columns for a project. Returns each column\'s name, position, ' +
+        'and the task statuses it contains. Use this to understand the board layout before ' +
+        'transitioning tasks — different roles move tasks to different columns ' +
+        '(e.g. implementers move to "In Progress", designers move to "UX", reviewers move to "Review").',
+      label: 'get_board_columns',
+      parameters: GetBoardColumnsParamsSchema,
+      execute: async (
+        _toolCallId: string,
+        params: unknown,
+        signal?: AbortSignal,
+      ): Promise<AgentToolResult<VoidDetails>> => {
+        const p = params as GetBoardColumnsParams;
+        const apiBase = getApiBase();
+        try {
+          const url = `${apiBase}/v1/projects/${p.projectId}/board`;
+          const response = await authFetch(url, { signal });
+          if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+          const data = (await response.json()) as any;
+          const columns: any[] = data.columns || [];
+
+          if (columns.length === 0) {
+            return { content: [{ type: 'text', text: 'No columns found for this project.' }], details: {} };
+          }
+
+          const lines = [`**Board columns for project ${p.projectId}:**\n`];
+          for (const col of columns) {
+            const statuses = (col.task_statuses || []).join(', ') || '(no statuses mapped)';
+            lines.push(`${col.position + 1}. **${col.name}** — statuses: ${statuses}${col.wip_limit ? ` (WIP limit: ${col.wip_limit})` : ''}`);
+          }
+          lines.push(
+            `\nUse \`transition_task(projectId, taskId, status)\` with one of the statuses ` +
+            `above to move a task to the appropriate column for your role.`
+          );
+
+          return { content: [{ type: 'text', text: lines.join('\n') }], details: {} };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `Error fetching board columns: ${err instanceof Error ? err.message : String(err)}` }], details: {} };
         }
       },
     },

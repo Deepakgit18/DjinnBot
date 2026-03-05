@@ -119,6 +119,14 @@ export interface IWorkspaceManager {
   getRunPath(runId: string): string | null;
 
   /**
+   * Find an existing worktree checked out on the given branch.
+   * Returns the worktree path if found, null otherwise.
+   * Used to reuse existing task worktrees (e.g. from claim_task) instead of
+   * creating duplicate worktrees on the same branch (which git forbids).
+   */
+  findWorktreeForBranch?(projectId: string, branch: string): string | null;
+
+  /**
    * Finalize a run workspace after the run completes.
    * What "finalize" means is implementation-specific:
    *   git_worktree: push the branch, remove the worktree

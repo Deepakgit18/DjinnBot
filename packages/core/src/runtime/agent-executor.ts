@@ -80,10 +80,16 @@ export interface RunAgentOptions {
   taskWorkTypes?: string[];
   /** Executor model for spawn_executor — passed to container as EXECUTOR_MODEL env var. */
   executorModel?: string;
+  /** Executor timeout in seconds — passed to container as EXECUTOR_TIMEOUT_SEC env var.
+   *  Controls how long spawned executor sessions run. Also used as work lock TTL. */
+  executorTimeoutSec?: number;
   /** Thinking level to pass to the Agent ('off'|'minimal'|'low'|'medium'|'high'|'xhigh') */
   thinkingLevel?: string;
   /** DjinnBot user ID who initiated this run — for per-user provider key resolution. */
   userId?: string;
+  /** Session source — distinguishes pulse planners from executor workers in the container.
+   *  Passed as SESSION_SOURCE env var so the agent-runtime can tailor tool selection. */
+  source?: string;
   /** JSON Schema for structured output. When set, the runner makes a constrained
    *  decoding API call instead of running a full agent loop with tools. */
   outputSchema?: {

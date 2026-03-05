@@ -64,6 +64,13 @@ class PulseRoutine(Base, PrefixedIdMixin, TimestampMixin):
     planning_model: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     executor_model: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
 
+    # --- executor timeout (seconds) ---
+    # How long a spawned executor session is allowed to run.
+    # Separate from timeout_ms (which controls the pulse/planner session).
+    # Work lock TTL should match this value.
+    # null = use default (300s / 5 min).
+    executor_timeout_sec: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     # --- task routing (Phase 4: Pulse + Swarm integration) ---
     # JSON array of SDLC stage names this routine handles.
     # e.g. ["implement", "review"] for Yukihiro's task work routine.

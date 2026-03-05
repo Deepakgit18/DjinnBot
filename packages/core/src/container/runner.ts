@@ -30,6 +30,7 @@ export interface RuntimeSettings {
   maxWakesPerDay: number;
   maxWakesPerPairPerDay: number;
   // Pulse execution
+  pulseEnabled: boolean;
   maxConcurrentPulseSessions: number;
   defaultPulseTimeoutSec: number;
   // Autonomous agent execution
@@ -52,6 +53,7 @@ export const DEFAULT_RUNTIME_SETTINGS: RuntimeSettings = {
   wakeCooldownSec: 300,
   maxWakesPerDay: 12,
   maxWakesPerPairPerDay: 5,
+  pulseEnabled: true,
   maxConcurrentPulseSessions: 2,
   defaultPulseTimeoutSec: 120,
   chatInactivityTimeoutSec: 180,
@@ -378,6 +380,8 @@ export class ContainerRunner implements AgentRunner {
           AGENT_MODEL: model,
           // Executor model for spawn_executor tool — defaults to AGENT_MODEL if not set.
           ...(options.executorModel ? { EXECUTOR_MODEL: options.executorModel } : {}),
+          // Executor timeout — controls spawn_executor default timeout and work lock TTL.
+          ...(options.executorTimeoutSec ? { EXECUTOR_TIMEOUT_SEC: String(options.executorTimeoutSec) } : {}),
           // All configured provider API keys injected by their canonical env var names
           ...providerEnvVars,
           // Pass pulse columns so the agent-runtime can scope get_ready_tasks correctly.
@@ -403,6 +407,10 @@ export class ContainerRunner implements AgentRunner {
           MAX_AUTO_CONTINUATIONS: String(globalFlags.maxAutoContinuations),
           // LLM call logging context — used by the runtime to tag each API call
           RUN_ID: runId,
+          // Session source — distinguishes pulse planners from executor workers.
+          // The agent-runtime uses this to decide which tools to expose (executors
+          // should NOT get pipeline step-control or pulse planning tools).
+          ...(options.source ? { SESSION_SOURCE: options.source } : {}),
           // User attribution — agent-runtime includes this in LLM call logs
           // so daily usage can be tracked per-user for share limit enforcement.
           ...(userId ? { DJINNBOT_USER_ID: userId } : {}),

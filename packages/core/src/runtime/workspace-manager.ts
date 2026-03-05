@@ -119,6 +119,43 @@ export class GitWorktreeWorkspaceManager implements IWorkspaceManager, IVersionC
     return true;
   }
 
+  // ── IWorkspaceManager: findWorktreeForBranch ───────────────────────
+  // Check if a worktree already exists for a given branch (e.g. from claim_task).
+
+  findWorktreeForBranch(projectId: string, branch: string): string | null {
+    const projectPath = join(WORKSPACES_DIR, projectId);
+    if (!existsSync(join(projectPath, '.git'))) return null;
+
+    try {
+      const output = execSync('git worktree list --porcelain', {
+        cwd: projectPath,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      // Parse porcelain output: blocks separated by blank lines.
+      // Each block has "worktree <path>", "HEAD <sha>", "branch refs/heads/<name>"
+      let currentPath: string | null = null;
+      for (const line of output.split('\n')) {
+        if (line.startsWith('worktree ')) {
+          currentPath = line.slice('worktree '.length);
+        } else if (line.startsWith('branch refs/heads/')) {
+          const branchName = line.slice('branch refs/heads/'.length);
+          if (branchName === branch && currentPath) {
+            console.log(`[GitWorktreeWM] Found existing worktree for branch ${branch}: ${currentPath}`);
+            return currentPath;
+          }
+        } else if (line === '') {
+          currentPath = null;
+        }
+      }
+    } catch (err) {
+      console.warn(`[GitWorktreeWM] Failed to list worktrees for ${projectId}:`, err);
+    }
+
+    return null;
+  }
+
   // ── IWorkspaceManager: createRunWorkspaceAsync ─────────────────────
   // Canonical interface method — delegates to the worktree implementation.
 

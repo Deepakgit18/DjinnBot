@@ -41,6 +41,7 @@ ALLOWED_AUDIO_TYPES = {
     "audio/aac",  # AAC
     "audio/flac",  # FLAC
     "audio/amr",  # AMR (older WhatsApp voice notes)
+    "application/ogg",  # OGG container (Signal voice notes on some platforms)
 }
 ALLOWED_MIME_TYPES = (
     ALLOWED_IMAGE_TYPES

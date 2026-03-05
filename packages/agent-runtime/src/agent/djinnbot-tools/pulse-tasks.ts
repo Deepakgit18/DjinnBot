@@ -298,15 +298,16 @@ export function createPulseTasksTools(config: PulseTasksToolsConfig): AgentTool[
                 `**Task ID**: ${taskId}`,
                 `**Branch**: ${branch}`,
                 `**Workspace**: ${worktreePath}${workspaceNote}`, ``,
-                `Your workspace is a git worktree already checked out on branch \`${branch}\`.`,
-                `Git credentials are configured — you can push directly:`, ``,
-                '```bash',
-                `cd ${worktreePath}`,
-                `# ... make your changes ...`,
-                `git add -A && git commit -m "your message"`,
-                `git push`,
-                '```', ``,
-                `When you are done, call transition_task to move it to 'review'.`,
+              `Your workspace is a git worktree already checked out on branch \`${branch}\`.`,
+              `Git credentials are configured — you can push directly:`, ``,
+              '```bash',
+              `cd ${worktreePath}`,
+              `# ... make your changes ...`,
+              `git add -A && git commit -m "your message"`,
+              `git push`,
+              '```', ``,
+              `Call \`get_board_columns(projectId)\` to see available columns, then use`,
+              `\`transition_task\` to move the task to the appropriate status for your role.`,
               ].join('\n'),
             }],
             details: {},
@@ -575,6 +576,92 @@ export function createPulseTasksTools(config: PulseTasksToolsConfig): AgentTool[
           };
         } catch (err) {
           return { content: [{ type: 'text', text: `Error getting task workflow: ${err instanceof Error ? err.message : String(err)}` }], details: {} };
+        }
+      },
+    },
+
+    {
+      name: 'get_task_executor_runs',
+      description:
+        'Get the history of executor runs for a specific task. Returns each run\'s status, ' +
+        'structured outputs (commit hashes, files changed, summary, deviations), and timestamps. ' +
+        'Use this at the start of a pulse cycle to check if a previously spawned executor has ' +
+        'completed — then open a PR and transition the task based on the results.',
+      label: 'get_task_executor_runs',
+      parameters: Type.Object({
+        projectId: Type.String({ description: 'Project ID' }),
+        taskId: Type.String({ description: 'Task ID' }),
+        limit: Type.Optional(Type.Number({ description: 'Max runs to return (default 5)', default: 5 })),
+      }),
+      execute: async (
+        _toolCallId: string,
+        params: unknown,
+        signal?: AbortSignal,
+      ): Promise<AgentToolResult<VoidDetails>> => {
+        const { projectId, taskId, limit } = params as { projectId: string; taskId: string; limit?: number };
+        const apiBase = getApiBase();
+        try {
+          const url = `${apiBase}/v1/projects/${projectId}/tasks/${taskId}/executor-runs?limit=${limit || 5}`;
+          const response = await authFetch(url, { signal });
+          if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+          const data = (await response.json()) as any;
+          const runs: any[] = data.runs || [];
+
+          if (runs.length === 0) {
+            return {
+              content: [{ type: 'text', text: `No executor runs found for task ${taskId}.` }],
+              details: {},
+            };
+          }
+
+          const lines = [`**Executor runs for task ${taskId}** (${runs.length} found):\n`];
+          for (const run of runs) {
+            const outputs = run.outputs || {};
+            const age = run.completed_at
+              ? `completed ${Math.round((Date.now() - run.completed_at) / 60000)}m ago`
+              : `started ${Math.round((Date.now() - run.created_at) / 60000)}m ago`;
+
+            lines.push(`### ${run.run_id} — **${run.status}** (${age})`);
+
+            if (outputs.summary) lines.push(`  Summary: ${outputs.summary}`);
+            if (outputs.commit_hashes) lines.push(`  Commits: ${outputs.commit_hashes}`);
+            if (outputs.files_changed) lines.push(`  Files: ${outputs.files_changed}`);
+            if (outputs.deviations) lines.push(`  Deviations: ${outputs.deviations}`);
+            if (outputs.blocked_by) lines.push(`  **Blocked by**: ${outputs.blocked_by}`);
+            if (outputs.error) lines.push(`  **Error**: ${outputs.error}`);
+            if (outputs.raw_output) lines.push(`  Raw output: ${outputs.raw_output.slice(0, 300)}...`);
+            if (run.task_branch) lines.push(`  Branch: ${run.task_branch}`);
+            lines.push('');
+          }
+
+          // Add guidance for the planner
+          const latestRun = runs[0];
+          if (latestRun.status === 'completed' && latestRun.outputs?.commit_hashes) {
+            lines.push(
+              `The latest executor run completed successfully with commits. You should:`,
+              `1. Call \`open_pull_request()\` to create a PR for this task`,
+              `2. Call \`transition_task()\` to move it to the appropriate review/test column`,
+              `3. Call \`release_work_lock()\` if you hold one`,
+            );
+          } else if (latestRun.status === 'failed') {
+            lines.push(
+              `The latest executor run failed. Review the error and decide:`,
+              `- Retry with a revised execution prompt via \`spawn_executor()\``,
+              `- Transition the task to failed/blocked if unrecoverable`,
+            );
+          } else if (latestRun.status === 'running') {
+            lines.push(`An executor is currently running. Wait for it to complete.`);
+          }
+
+          return {
+            content: [{ type: 'text', text: lines.join('\n') }],
+            details: {},
+          };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error fetching executor runs: ${err instanceof Error ? err.message : String(err)}` }],
+            details: {},
+          };
         }
       },
     },

@@ -1284,3 +1284,94 @@ async def update_step(
         "started_at": step.started_at,
         "completed_at": step.completed_at,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# EXECUTOR RESULT — Store outputs from executor_complete/executor_fail
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class ExecutorResultRequest(BaseModel):
+    run_id: str
+    success: bool
+    outputs: dict[str, str] | None = None
+    error: str | None = None
+
+
+@router.post("/internal/executor-result")
+async def store_executor_result(
+    req: ExecutorResultRequest,
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Store structured outputs from an executor session.
+
+    Called by the executor_complete/executor_fail tools inside the container.
+    Updates the Run's outputs column so the planner can read them via polling.
+    Does NOT change the run status — that's handled by handleSpawnExecutorRun
+    when the container exits.
+    """
+    result = await session.execute(select(Run).where(Run.id == req.run_id))
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run {req.run_id} not found")
+
+    # Merge outputs into existing (in case multiple calls)
+    existing_outputs = json.loads(run.outputs) if run.outputs else {}
+    if req.outputs:
+        existing_outputs.update(req.outputs)
+    if req.error:
+        existing_outputs["error"] = req.error
+
+    run.outputs = json.dumps(existing_outputs)
+    run.updated_at = now_ms()
+    await session.commit()
+
+    logger.info(
+        f"Executor result stored for run {req.run_id}: "
+        f"success={req.success}, keys={list((req.outputs or {}).keys())}"
+    )
+    return {"status": "stored", "run_id": req.run_id}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# EXECUTOR RUNS BY TASK — Query executor runs for a specific task
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/projects/{project_id}/tasks/{task_id}/executor-runs")
+async def get_task_executor_runs(
+    project_id: str,
+    task_id: str,
+    limit: int = 10,
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Get executor runs for a specific task.
+
+    Returns runs where task_id matches, ordered by most recent first.
+    Used by the planner to check on previous executor attempts across pulse cycles.
+    """
+    result = await session.execute(
+        select(Run)
+        .where(Run.project_id == project_id, Run.task_id == task_id)
+        .order_by(Run.created_at.desc())
+        .limit(limit)
+    )
+    runs = result.scalars().all()
+
+    return {
+        "task_id": task_id,
+        "project_id": project_id,
+        "count": len(runs),
+        "runs": [
+            {
+                "run_id": r.id,
+                "status": r.status,
+                "outputs": json.loads(r.outputs) if r.outputs else {},
+                "model_override": r.model_override,
+                "task_branch": r.task_branch,
+                "created_at": r.created_at,
+                "completed_at": r.completed_at,
+            }
+            for r in runs
+        ],
+    }

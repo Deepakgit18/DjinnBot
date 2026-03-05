@@ -31,6 +31,12 @@ class Run(Base, TimestampWithCompletedMixin):
     # to decide which workspace manager to use. Values match Project.workspace_type.
     workspace_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
+    # Task ID — set for executor runs spawned via spawn_executor so we can
+    # query all runs for a specific task.  NULL for pipeline runs and other types.
+    task_id: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+
     # Multi-user key resolution fields
     initiated_by_user_id: Mapped[Optional[str]] = mapped_column(
         String(64),

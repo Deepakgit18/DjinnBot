@@ -31,6 +31,7 @@ export function PulseRoutineEditor({ routine, agentId, onUpdated }: PulseRoutine
   const [blackouts, setBlackouts] = useState<PulseBlackout[]>(routine.blackouts);
   const [planningModel, setPlanningModel] = useState(routine.planningModel || '');
   const [executorModel, setExecutorModel] = useState(routine.executorModel || '');
+  const [executorTimeoutSec, setExecutorTimeoutSec] = useState(routine.executorTimeoutSec);
 
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -85,8 +86,9 @@ export function PulseRoutineEditor({ routine, agentId, onUpdated }: PulseRoutine
       maxConcurrent,
       planningModel: planningModel || undefined,
       executorModel: executorModel || undefined,
+      executorTimeoutSec: executorTimeoutSec ?? undefined,
     });
-  }, [name, description, instructions, intervalMinutes, offsetMinutes, blackouts, timeoutMs, maxConcurrent, planningModel, executorModel, save]);
+  }, [name, description, instructions, intervalMinutes, offsetMinutes, blackouts, timeoutMs, maxConcurrent, planningModel, executorModel, executorTimeoutSec, save]);
 
   const markDirty = () => { dirty.current = true; };
 
@@ -148,7 +150,7 @@ export function PulseRoutineEditor({ routine, agentId, onUpdated }: PulseRoutine
       </div>
 
       {/* Schedule */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         <div>
           <Label className="text-sm">Interval (min)</Label>
           <Input
@@ -172,17 +174,6 @@ export function PulseRoutineEditor({ routine, agentId, onUpdated }: PulseRoutine
           />
         </div>
         <div>
-          <Label className="text-sm">Timeout (sec)</Label>
-          <Input
-            type="number"
-            min={30}
-            step={30}
-            value={timeoutSeconds}
-            onChange={(e) => { setTimeoutMs((parseInt(e.target.value) || 120) * 1000); markDirty(); }}
-            className="h-9 mt-1"
-          />
-        </div>
-        <div>
           <Label className="text-sm">Max Concurrent</Label>
           <Input
             type="number"
@@ -192,6 +183,43 @@ export function PulseRoutineEditor({ routine, agentId, onUpdated }: PulseRoutine
             onChange={(e) => { setMaxConcurrent(parseInt(e.target.value) || 1); markDirty(); }}
             className="h-9 mt-1"
           />
+        </div>
+      </div>
+
+      {/* Timeouts */}
+      <div>
+        <Label className="text-sm mb-2 block">Timeouts</Label>
+        <p className="text-[10px] text-muted-foreground mb-2">
+          The planner timeout limits how long this pulse session runs (discovering tasks, spawning executors).
+          The executor timeout limits how long each spawned executor session runs (doing the actual work).
+          Work lock TTL is automatically set to match the executor timeout.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs text-muted-foreground">Planner Timeout (sec)</Label>
+            <Input
+              type="number"
+              min={30}
+              step={30}
+              value={timeoutSeconds}
+              onChange={(e) => { setTimeoutMs((parseInt(e.target.value) || 120) * 1000); markDirty(); }}
+              className="h-9 mt-1"
+              placeholder="120"
+            />
+          </div>
+          <div>
+            <Label className="text-xs text-muted-foreground">Executor Timeout (sec)</Label>
+            <Input
+              type="number"
+              min={30}
+              max={3600}
+              step={30}
+              value={executorTimeoutSec ?? 300}
+              onChange={(e) => { setExecutorTimeoutSec(parseInt(e.target.value) || 300); markDirty(); }}
+              className="h-9 mt-1"
+              placeholder="300"
+            />
+          </div>
         </div>
       </div>
 
