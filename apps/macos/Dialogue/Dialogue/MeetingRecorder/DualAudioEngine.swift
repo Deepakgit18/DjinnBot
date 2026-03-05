@@ -74,6 +74,10 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
         diarizationMode: DiarizationMode = .pyannoteStreaming,
         micDeviceUID: String? = nil
     ) async throws {
+        // Reset per-session counters (engine instance may be reused across recordings)
+        micBufferCount = 0
+        meetingBufferCount = 0
+
         logger.info("Starting DualAudioEngine (mic: \(micEnabled), meeting: \(meetingEnabled), diarization: \(diarizationMode.rawValue))")
         LogStore.shared.log("Starting DualAudioEngine (mic: \(micEnabled), meeting: \(meetingEnabled), diarization: \(diarizationMode.rawValue))", category: .audio)
 
@@ -265,6 +269,7 @@ final class DualAudioEngine: NSObject, @unchecked Sendable {
 
     /// Process a meeting app audio buffer: feed to meeting pipeline + WAV recorders.
     private func handleMeetingBuffer(_ buffer: AVAudioPCMBuffer) {
+        meetingBufferCount += 1
         let time = TimelineManager.shared.currentAudioTime()
         if micPipeline == nil {
             TimelineManager.shared.advance(bySamples: buffer.frameLength)

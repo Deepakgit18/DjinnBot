@@ -214,7 +214,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Picker("Input Device", selection: $selectedInputDeviceUID) {
+                Picker("Input Device", selection: micPickerBinding) {
                     Text("System Default")
                         .tag("")
                     ForEach(availableInputDevices) { device in
@@ -553,6 +553,28 @@ struct SettingsView: View {
     }
 
     // MARK: - Actions
+
+    /// Binding that shows "System Default" when the saved UID isn't currently
+    /// connected, but only updates the persisted preference when the user
+    /// explicitly picks a new device.
+    private var micPickerBinding: Binding<String> {
+        Binding<String>(
+            get: {
+                let saved = selectedInputDeviceUID
+                if saved.isEmpty { return "" }
+                // If the saved device is connected, show it selected
+                if availableInputDevices.contains(where: { $0.uid == saved }) {
+                    return saved
+                }
+                // Device not connected — show "System Default" in the picker
+                // but do NOT clear the persisted preference
+                return ""
+            },
+            set: { newValue in
+                selectedInputDeviceUID = newValue
+            }
+        )
+    }
 
     private func refreshInputDevices() {
         let streamer = AudioInputStreamer()
