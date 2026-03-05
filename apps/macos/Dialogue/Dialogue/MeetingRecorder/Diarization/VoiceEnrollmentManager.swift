@@ -54,6 +54,31 @@ final class VoiceEnrollmentManager: ObservableObject {
     /// Total clips required for enrollment.
     let requiredClipCount: Int = 3
 
+    // MARK: - Input Device Selection
+
+    /// Available audio input devices.
+    @Published private(set) var availableDevices: [AudioInputDeviceManager.InputDevice] = []
+
+    /// The current system default input device ID, used to highlight the
+    /// active device in the picker.
+    @Published private(set) var currentDefaultDeviceID: AudioDeviceID?
+
+    /// Switch the system-wide default input device.
+    /// Our CoreAudio property listener handles restarting the engine.
+    func selectDevice(_ device: AudioInputDeviceManager.InputDevice) {
+        guard device.audioDeviceID != currentDefaultDeviceID else { return }
+        logger.info("User selected input device: \(device.name)")
+        LogStore.shared.log("User switching system default input to '\(device.name)' (ID: \(device.audioDeviceID))", category: .voiceEnrollment)
+        AudioInputDeviceManager.setSystemDefaultInputDevice(device)
+        // currentDefaultDeviceID updates when handleDefaultInputDeviceChanged fires
+    }
+
+    /// Refresh the list of available input devices and the current default.
+    func refreshDevices() {
+        availableDevices = AudioInputDeviceManager.availableInputDevices()
+        currentDefaultDeviceID = AudioInputDeviceManager.defaultInputDevice()?.audioDeviceID
+    }
+
     // MARK: - Silence Detection
 
     /// Peak level below which audio is considered silence.
@@ -182,30 +207,46 @@ final class VoiceEnrollmentManager: ObservableObject {
     }
 
     /// Called when the system default input device changes.
-    /// Restarts the preview or recording engine on the new device.
+    /// Tears down the old engine immediately, then schedules a delayed
+    /// restart to give CoreAudio time to finish its internal cleanup.
     private func handleDefaultInputDeviceChanged() {
         guard !isHandlingDeviceChange else { return }
         isHandlingDeviceChange = true
-        defer { isHandlingDeviceChange = false }
+
+        // Update the published device list and current default
+        refreshDevices()
 
         let deviceName = AudioInputDeviceManager.defaultInputDevice()?.name ?? "unknown"
         logger.info("Default input device changed to: \(deviceName)")
-        LogStore.shared.log("Default input device changed to '\(deviceName)'. Restarting active engine.", category: .voiceEnrollment)
+        LogStore.shared.log("Default input device changed to '\(deviceName)'. Will restart engine after delay.", category: .voiceEnrollment)
 
+        let wasRecording: Bool
         switch state {
         case .recording:
-            // Restart the recording engine on the new device.
-            // Samples collected so far are already converted to 16kHz mono
-            // and remain valid. We just need a fresh engine for the new hardware.
-            restartRecordingEngine()
-
+            wasRecording = true
+            // Tear down old engine immediately (samples are preserved)
+            stopRecordingEngine()
         case .ready, .silenceDetected:
-            // Restart the preview to pick up the new device.
-            restartPreview()
-
+            wasRecording = false
+            stopPreview()
         default:
-            // idle, processing, done, error — nothing to restart
-            break
+            isHandlingDeviceChange = false
+            return
+        }
+
+        // Delay restart to let CoreAudio finish tearing down the old device.
+        // Without this, creating a new AVAudioEngine immediately can hit
+        // stale device state and deadlock or throw errors.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self else { return }
+            self.isHandlingDeviceChange = false
+
+            if wasRecording {
+                self.restartRecordingEngine()
+            } else if self.shouldPreview || self.state == .ready {
+                self.startPreview()
+            }
         }
     }
 
@@ -215,15 +256,26 @@ final class VoiceEnrollmentManager: ObservableObject {
     private func handleEngineConfigChange(isRecordingEngine: Bool) {
         guard !isHandlingDeviceChange else { return }
         isHandlingDeviceChange = true
-        defer { isHandlingDeviceChange = false }
 
         logger.info("AVAudioEngine config change (recording=\(isRecordingEngine))")
-        LogStore.shared.log("AVAudioEngine configuration changed (isRecording=\(isRecordingEngine)). Restarting engine.", category: .voiceEnrollment)
+        LogStore.shared.log("AVAudioEngine configuration changed (isRecording=\(isRecordingEngine)). Will restart engine after delay.", category: .voiceEnrollment)
 
         if isRecordingEngine {
-            restartRecordingEngine()
-        } else if shouldPreview {
-            restartPreview()
+            stopRecordingEngine()
+        } else {
+            stopPreview()
+        }
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self else { return }
+            self.isHandlingDeviceChange = false
+
+            if isRecordingEngine {
+                self.restartRecordingEngine()
+            } else if self.shouldPreview || self.state == .ready {
+                self.startPreview()
+            }
         }
     }
 
@@ -237,6 +289,7 @@ final class VoiceEnrollmentManager: ObservableObject {
         clipCount = 0
         LogStore.shared.log("Voice enrollment prepare() called (state: \(String(describing: state)))", category: .voiceEnrollment)
 
+        refreshDevices()
         startObservingDefaultDevice()
 
         do {
@@ -311,14 +364,20 @@ final class VoiceEnrollmentManager: ObservableObject {
     }
 
     /// Stop the preview engine.
+    /// Safe to call even if the engine was already stopped by CoreAudio
+    /// (e.g. during a device change).
     private func stopPreview() {
         if let observer = previewConfigObserver {
             NotificationCenter.default.removeObserver(observer)
             previewConfigObserver = nil
         }
         guard let engine = previewEngine else { return }
-        LogStore.shared.log("Stopping mic preview engine", category: .voiceEnrollment)
-        engine.stop()
+        LogStore.shared.log("Stopping mic preview engine (isRunning: \(engine.isRunning))", category: .voiceEnrollment)
+        // Only call stop() if still running — calling stop() on an engine
+        // whose device was yanked by CoreAudio can deadlock.
+        if engine.isRunning {
+            engine.stop()
+        }
         engine.inputNode.removeTap(onBus: 0)
         previewEngine = nil
         peakLevel = 0
@@ -460,6 +519,7 @@ final class VoiceEnrollmentManager: ObservableObject {
 
     /// Tear down the current recording engine without discarding collected samples.
     /// Used when we need to recreate the engine on a new device.
+    /// Safe to call even if the engine was already stopped by CoreAudio.
     private func stopRecordingEngine() {
         if let observer = recordingConfigObserver {
             NotificationCenter.default.removeObserver(observer)
@@ -467,9 +527,15 @@ final class VoiceEnrollmentManager: ObservableObject {
         }
         durationTimer?.invalidate()
         durationTimer = nil
-        recordingEngine?.stop()
-        recordingEngine?.inputNode.removeTap(onBus: 0)
-        recordingEngine = nil
+        if let engine = recordingEngine {
+            // Only call stop() if still running — calling stop() on an engine
+            // whose device was yanked by CoreAudio can deadlock.
+            if engine.isRunning {
+                engine.stop()
+            }
+            engine.inputNode.removeTap(onBus: 0)
+            recordingEngine = nil
+        }
     }
 
     /// Restart the recording engine on the new default device.

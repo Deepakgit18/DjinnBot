@@ -1,9 +1,10 @@
+import CoreAudio
 import SwiftUI
 
 /// Sheet for enrolling a new speaker voice via 3 recording clips.
 ///
 /// Flow:
-/// 1. User enters a name.
+/// 1. User enters a name and optionally selects an input device.
 /// 2. For each of 3 clips, a reading prompt is displayed.
 /// 3. User presses "Start Recording", reads the prompt aloud (~10 seconds).
 /// 4. User presses "Stop" — clip is stored.
@@ -47,8 +48,11 @@ struct VoiceEnrollmentSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 300)
 
-            // Live mic level
-            levelMeter(level: manager.peakLevel)
+            // Microphone picker + live level
+            VStack(spacing: 8) {
+                microphonePicker
+                levelMeter(level: manager.peakLevel)
+            }
 
             // Color picker
             VStack(spacing: 4) {
@@ -128,6 +132,32 @@ struct VoiceEnrollmentSheet: View {
         }
         .onDisappear {
             manager.cleanup()
+        }
+    }
+
+    // MARK: - Microphone Picker
+
+    private var microphonePicker: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "mic.fill")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+
+            Picker("Input Device", selection: Binding<AudioDeviceID>(
+                get: { manager.currentDefaultDeviceID ?? 0 },
+                set: { newID in
+                    if let device = manager.availableDevices.first(where: { $0.audioDeviceID == newID }) {
+                        manager.selectDevice(device)
+                    }
+                }
+            )) {
+                ForEach(manager.availableDevices) { device in
+                    Text(device.name)
+                        .tag(device.audioDeviceID)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 280)
         }
     }
 
@@ -310,7 +340,7 @@ struct VoiceEnrollmentSheet: View {
             Text("No Audio Input Detected")
                 .font(.headline)
 
-            Text("The recording was stopped because no audio was received from the microphone. Please check your audio input device in System Settings.")
+            Text("The recording was stopped because no audio was received. Try selecting a different input device above, or check System Settings.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

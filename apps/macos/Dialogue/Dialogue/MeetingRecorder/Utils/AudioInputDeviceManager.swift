@@ -79,6 +79,45 @@ enum AudioInputDeviceManager {
         )
     }
 
+    // MARK: - Set System Default Input Device
+
+    /// Change the system-wide default input device via CoreAudio.
+    ///
+    /// This is equivalent to the user switching the input device in
+    /// System Settings > Sound > Input. Any `AVAudioEngine` using the
+    /// default device will receive a configuration change notification
+    /// and can restart to pick up the new device.
+    ///
+    /// - Returns: `true` if the system default was changed successfully.
+    @discardableResult
+    static func setSystemDefaultInputDevice(_ device: InputDevice) -> Bool {
+        var deviceID = device.audioDeviceID
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        let status = AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<AudioDeviceID>.size),
+            &deviceID
+        )
+
+        if status != noErr {
+            Logger(subsystem: "bot.djinn.app.dialog", category: "AudioInputDeviceManager")
+                .error("Failed to set system default input device to \(device.name) (ID \(device.audioDeviceID)): OSStatus \(status)")
+            return false
+        }
+
+        Logger(subsystem: "bot.djinn.app.dialog", category: "AudioInputDeviceManager")
+            .info("System default input device set to \(device.name) (ID \(device.audioDeviceID))")
+        return true
+    }
+
     // MARK: - Set Device on AVAudioEngine
 
     /// Set the input device for an `AVAudioEngine` by writing
