@@ -388,6 +388,12 @@ public final class MeetingStore: ObservableObject {
             let folderName = item.lastPathComponent
             let recordingExists = fileManager.fileExists(
                 atPath: item.appendingPathComponent("recording.opus").path
+            ) || fileManager.fileExists(
+                atPath: item.appendingPathComponent("recording.wav").path
+            ) || fileManager.fileExists(
+                atPath: item.appendingPathComponent("local.wav").path
+            ) || fileManager.fileExists(
+                atPath: item.appendingPathComponent("remote.wav").path
             )
             let transcriptExists = fileManager.fileExists(
                 atPath: item.appendingPathComponent("transcript.json").path
