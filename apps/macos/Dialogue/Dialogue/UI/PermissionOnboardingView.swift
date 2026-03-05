@@ -1,3 +1,4 @@
+import DialogueCore
 import SwiftUI
 
 /// Full-screen onboarding view shown on first launch (or whenever required

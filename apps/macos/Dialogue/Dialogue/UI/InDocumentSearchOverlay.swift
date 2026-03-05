@@ -1,3 +1,4 @@
+import DialogueCore
 import SwiftUI
 
 /// Shared state for in-document find (Cmd+F when a note or transcript is open).

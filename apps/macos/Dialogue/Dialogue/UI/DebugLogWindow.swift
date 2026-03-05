@@ -1,3 +1,4 @@
+import DialogueCore
 import SwiftUI
 
 /// A standalone window that displays the in-memory debug log.

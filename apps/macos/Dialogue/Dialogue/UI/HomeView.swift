@@ -1,3 +1,4 @@
+import DialogueCore
 import SwiftUI
 
 /// The Home screen shown in the main detail area when no document is open.

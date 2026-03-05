@@ -1,3 +1,4 @@
+import DialogueCore
 import SwiftUI
 
 /// Standalone window for managing speaker profiles and diarization settings.

@@ -1,3 +1,4 @@
+import DialogueCore
 import SwiftUI
 
 /// A collapsible banner shown below the title bar during recording.

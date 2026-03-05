@@ -1,3 +1,4 @@
+import DialogueCore
 import AudioToolbox
 import AVFoundation
 import Combine

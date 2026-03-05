@@ -1,3 +1,4 @@
+import DialogueCore
 import SwiftUI
 
 /// The expanded chat panel showing the full conversation, input field, and header.

@@ -1,3 +1,4 @@
+import DialogueCore
 import Foundation
 import os.log
 import SwiftUI

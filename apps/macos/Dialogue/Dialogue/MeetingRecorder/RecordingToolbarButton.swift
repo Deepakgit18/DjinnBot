@@ -1,3 +1,4 @@
+import DialogueCore
 import SwiftUI
 
 /// A toolbar button for the title bar: red circle when idle, red square when recording.

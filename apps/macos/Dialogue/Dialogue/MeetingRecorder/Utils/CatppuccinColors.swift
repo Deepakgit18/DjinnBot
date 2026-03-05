@@ -1,3 +1,4 @@
+import DialogueCore
 import SwiftUI
 
 /// Catppuccin Mocha palette colors for speaker differentiation.

@@ -1,3 +1,4 @@
+import DialogueCore
 import AppKit
 import UniformTypeIdentifiers
 import WebKit

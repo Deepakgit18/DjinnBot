@@ -1,3 +1,4 @@
+import DialogueCore
 import AVFoundation
 import Foundation
 import OSLog

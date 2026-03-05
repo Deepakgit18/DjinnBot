@@ -1,3 +1,4 @@
+import DialogueCore
 import SwiftUI
 import UniformTypeIdentifiers
 

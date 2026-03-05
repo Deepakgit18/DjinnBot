@@ -1,3 +1,4 @@
+import DialogueCore
 import AVFoundation
 import Combine
 import CoreAudio
@@ -65,10 +66,19 @@ final class VoiceEnrollmentManager: ObservableObject {
 
     /// Switch the input device directly on the streamer.
     /// No system default mutation — the HAL Output unit handles it.
+    ///
+    /// `selectDevice` on the streamer tears down the current stream
+    /// (uninitializes the AU, nils the continuation). If a preview or
+    /// recording stream was consuming buffers, it must be restarted
+    /// after the device switch completes.
     func selectDevice(_ device: AudioDevice) {
         guard device.audioDeviceID != currentDeviceID else { return }
         logger.info("User selected input device: \(device.name)")
         LogStore.shared.log("User switching input to '\(device.name)' (ID: \(device.audioDeviceID))", category: .voiceEnrollment)
+
+        // Remember whether we need to restart the preview after switching.
+        let wasPreviewActive = previewStreamTask != nil
+        stopPreview()
 
         do {
             try streamer.selectDevice(device)
@@ -77,6 +87,12 @@ final class VoiceEnrollmentManager: ObservableObject {
             logger.error("Failed to select device \(device.name): \(error.localizedDescription)")
             LogStore.shared.log("Failed to select device '\(device.name)': \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
             state = .error("Failed to select device: \(error.localizedDescription)")
+            return
+        }
+
+        // Restart the preview stream if it was running before the switch.
+        if wasPreviewActive && shouldPreview {
+            startPreview()
         }
     }
 
