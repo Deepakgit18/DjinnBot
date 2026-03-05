@@ -1,4 +1,5 @@
 import Foundation
+import os.log
 import SwiftUI
 
 // MARK: - AppUpdater
@@ -65,6 +66,8 @@ final class AppUpdater: ObservableObject {
     private let dismissedVersionKey = "appUpdater_dismissedVersion"
 
     // MARK: - Private
+
+    private let log = Logger(subsystem: "bot.djinn.app.dialog", category: "AppUpdater")
 
     private var _pendingVersion: String?
     private var _pendingDownloadURL: URL?
@@ -205,15 +208,21 @@ final class AppUpdater: ObservableObject {
     /// Mounts the downloaded DMG, copies the .app over the current bundle,
     /// and relaunches the app.
     func installUpdate() async {
-        guard case .readyToInstall(let dmgPath) = state else { return }
+        guard case .readyToInstall(let dmgPath) = state else {
+            log.error("installUpdate called but state is not readyToInstall")
+            return
+        }
         state = .installing
+        log.info("Starting install from \(dmgPath.path)")
 
         do {
             try await performInstall(dmgPath: dmgPath)
-            // If we get here, relaunch should have happened.
-            // But just in case:
-            state = .idle
+            // If performInstall succeeds, the app is about to exit(0).
+            // We should never reach here because exit(0) is called in
+            // launchInstallerScript. If we somehow do, don't reset state —
+            // the app is in the process of terminating.
         } catch {
+            log.error("Install failed: \(error)")
             state = .failed("Install failed: \(error.localizedDescription)")
         }
     }
@@ -359,14 +368,16 @@ final class AppUpdater: ObservableObject {
         let fm = FileManager.default
 
         // 1. Mount the DMG.
+        log.info("Mounting DMG at \(dmgPath.path)")
         let mountPoint = try await mountDMG(at: dmgPath)
+        log.info("DMG mounted at \(mountPoint)")
 
         // 2. Find the .app inside the mounted volume.
         let mountURL = URL(fileURLWithPath: mountPoint)
         let contents = try fm.contentsOfDirectory(at: mountURL, includingPropertiesForKeys: nil)
+        log.info("DMG contents: \(contents.map(\.lastPathComponent))")
         guard let appBundle = contents.first(where: { $0.pathExtension == "app" }) else {
-            // Unmount before throwing.
-            unmountDMG(at: mountPoint)
+            await unmountDMG(at: mountPoint)
             throw UpdateError.noAppInDMG
         }
 
@@ -378,10 +389,11 @@ final class AppUpdater: ObservableObject {
         try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
 
         let stagedApp = stagingDir.appendingPathComponent(appBundle.lastPathComponent)
+        log.info("Copying \(appBundle.lastPathComponent) to staging: \(stagingDir.path)")
         try fm.copyItem(at: appBundle, to: stagedApp)
 
-        // 4. Unmount the DMG — we're done with it.
-        unmountDMG(at: mountPoint)
+        // 4. Unmount the DMG synchronously — we need it done before proceeding.
+        await unmountDMG(at: mountPoint)
         try? fm.removeItem(at: dmgPath)
 
         // 5. Clear dismissed version before we quit.
@@ -394,7 +406,8 @@ final class AppUpdater: ObservableObject {
         //    d) Opens the new app
         //    e) Cleans up the staging directory
         let currentAppPath = Bundle.main.bundlePath
-        launchInstallerScript(
+        log.info("Launching installer script: staged=\(stagedApp.path) target=\(currentAppPath)")
+        try launchInstallerScript(
             stagedAppPath: stagedApp.path,
             targetAppPath: currentAppPath,
             stagingDirPath: stagingDir.path
@@ -412,26 +425,52 @@ final class AppUpdater: ObservableObject {
         stagedAppPath: String,
         targetAppPath: String,
         stagingDirPath: String
-    ) {
+    ) throws {
         let pid = ProcessInfo.processInfo.processIdentifier
+
+        // Log file lets us diagnose issues even after the app has quit.
+        let logFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dialogue-update.log").path
 
         let script = """
             #!/bin/sh
-            # Wait for the app to fully exit
-            while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done
+            exec > "\(logFile)" 2>&1
+            echo "Update script started at $(date)"
+            echo "Waiting for PID \(pid) to exit..."
+
+            # Wait for the app to fully exit (timeout after 30s)
+            TRIES=0
+            while kill -0 \(pid) 2>/dev/null; do
+                sleep 0.2
+                TRIES=$((TRIES + 1))
+                if [ $TRIES -gt 150 ]; then
+                    echo "ERROR: App did not exit after 30s, aborting"
+                    exit 1
+                fi
+            done
+            echo "App exited after $TRIES checks"
             sleep 0.5
 
             # Remove the old app bundle
+            echo "Removing old app at \(targetAppPath)"
             rm -rf "\(targetAppPath)"
 
             # Move the staged app into place
+            echo "Moving staged app to \(targetAppPath)"
             mv "\(stagedAppPath)" "\(targetAppPath)"
+            if [ $? -ne 0 ]; then
+                echo "ERROR: mv failed with exit code $?"
+                exit 1
+            fi
 
             # Clean up staging directory
             rm -rf "\(stagingDirPath)"
 
             # Relaunch
+            echo "Relaunching \(targetAppPath)"
             open "\(targetAppPath)"
+
+            echo "Update script completed at $(date)"
 
             # Self-cleanup
             rm -f "$0"
@@ -440,16 +479,14 @@ final class AppUpdater: ObservableObject {
         // Write script to a temp file so it can outlive our process.
         let scriptURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("dialogue-update-\(UUID().uuidString.prefix(8)).sh")
-        do {
-            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755],
-                ofItemAtPath: scriptURL.path
-            )
-        } catch {
-            print("[Dialogue] Failed to write update script: \(error)")
-            return
-        }
+
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: scriptURL.path
+        )
+
+        log.info("Wrote update script to \(scriptURL.path)")
 
         // Launch via a subshell with nohup + & so the script fully detaches
         // from our process group and survives app termination.
@@ -457,7 +494,9 @@ final class AppUpdater: ObservableObject {
         launcher.executableURL = URL(fileURLWithPath: "/bin/sh")
         launcher.arguments = ["-c", "nohup '\(scriptURL.path)' >/dev/null 2>&1 &"]
         launcher.qualityOfService = .userInitiated
-        try? launcher.run()
+        try launcher.run()
+
+        log.info("Installer script launched, terminating app in 0.5s")
 
         // Hard-exit the app. NSApplication.shared.terminate(nil) goes through
         // SwiftUI's shutdown sequence which can silently cancel termination.
@@ -473,33 +512,38 @@ final class AppUpdater: ObservableObject {
     private func mountDMG(at path: URL) async throws -> String {
         let dmgPath = path.path
         return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
+            DispatchQueue.global(qos: .userInitiated).async { [log] in
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
                 process.arguments = ["attach", dmgPath, "-nobrowse", "-quiet", "-plist"]
 
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = Pipe()
+                let stdoutPipe = Pipe()
+                let stderrPipe = Pipe()
+                process.standardOutput = stdoutPipe
+                process.standardError = stderrPipe
 
                 do {
                     try process.run()
                 } catch {
+                    log.error("hdiutil failed to launch: \(error)")
                     continuation.resume(throwing: UpdateError.dmgMountFailed)
                     return
                 }
                 process.waitUntilExit()
 
                 guard process.terminationStatus == 0 else {
+                    let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    log.error("hdiutil attach exited with \(process.terminationStatus): \(stderr)")
                     continuation.resume(throwing: UpdateError.dmgMountFailed)
                     return
                 }
 
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
 
                 guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
                       let entities = plist["system-entities"] as? [[String: Any]]
                 else {
+                    log.error("hdiutil attach: failed to parse plist output")
                     continuation.resume(throwing: UpdateError.dmgMountFailed)
                     return
                 }
@@ -511,22 +555,31 @@ final class AppUpdater: ObservableObject {
                     }
                 }
 
+                log.error("hdiutil attach: no mount-point found in plist entities")
                 continuation.resume(throwing: UpdateError.dmgMountFailed)
             }
         }
     }
 
-    /// Best-effort unmount. Non-throwing because we don't want unmount
-    /// failures to block the update flow.
-    ///
-    /// Runs `hdiutil detach` off the main thread to avoid blocking the UI.
-    private func unmountDMG(at mountPoint: String) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-            process.arguments = ["detach", mountPoint, "-quiet"]
-            try? process.run()
-            process.waitUntilExit()
+    /// Unmounts a DMG volume. Waits for completion so callers can safely
+    /// delete the DMG file afterward.
+    private func unmountDMG(at mountPoint: String) async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { [log] in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+                process.arguments = ["detach", mountPoint, "-quiet"]
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    if process.terminationStatus != 0 {
+                        log.warning("hdiutil detach exited with \(process.terminationStatus)")
+                    }
+                } catch {
+                    log.warning("hdiutil detach failed to launch: \(error)")
+                }
+                continuation.resume()
+            }
         }
     }
 
