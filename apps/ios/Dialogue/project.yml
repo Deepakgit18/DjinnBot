@@ -1,0 +1,111 @@
+name: Dialogue
+options:
+  bundleIdPrefix: bot.djinn.ios
+  deploymentTarget:
+    iOS: "26.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+  defaultConfig: Debug
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    DEVELOPMENT_TEAM: 8H548FVL95
+    CODE_SIGN_STYLE: Automatic
+
+packages:
+  DialogueCore:
+    path: ../../../Packages/DialogueCore
+
+schemes:
+  Dialogue:
+    build:
+      targets:
+        Dialogue: all
+        BroadcastSetupUI: all
+        BroadcastUpload: all
+    run:
+      config: Debug
+      executable: Dialogue
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
+targets:
+  Dialogue:
+    type: application
+    platform: iOS
+    sources:
+      - Dialogue
+    dependencies:
+      - package: DialogueCore
+      - target: BroadcastSetupUI
+        embed: true
+      - target: BroadcastUpload
+        embed: true
+    info:
+      path: Dialogue/Info.plist
+      properties:
+        NSMicrophoneUsageDescription: "Dialogue needs microphone access to record meetings for transcription and analysis."
+        UIBackgroundModes:
+          - audio
+        UILaunchScreen: {}
+    entitlements:
+      path: Dialogue/Dialogue.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.bot.djinn.dialogue
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)bot.djinn.ios.dialogue
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: bot.djinn.ios.dialogue
+        INFOPLIST_FILE: Dialogue/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Dialogue/Dialogue.entitlements
+        SWIFT_STRICT_CONCURRENCY: complete
+
+  BroadcastSetupUI:
+    type: app-extension
+    platform: iOS
+    sources:
+      - BroadcastSetupUI
+    info:
+      path: BroadcastSetupUI/Info.plist
+      properties:
+        CFBundleDisplayName: Dialogue Broadcast
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-setupui
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).BroadcastSetupViewController"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: bot.djinn.ios.dialogue.BroadcastSetupUI
+        INFOPLIST_FILE: BroadcastSetupUI/Info.plist
+        SWIFT_STRICT_CONCURRENCY: complete
+
+  BroadcastUpload:
+    type: app-extension
+    platform: iOS
+    sources:
+      - BroadcastUpload
+    info:
+      path: BroadcastUpload/Info.plist
+      properties:
+        CFBundleDisplayName: Dialogue Broadcast
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-upload
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).SampleHandler"
+    entitlements:
+      path: BroadcastUpload/BroadcastUpload.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.bot.djinn.dialogue
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: bot.djinn.ios.dialogue.BroadcastUpload
+        INFOPLIST_FILE: BroadcastUpload/Info.plist
+        CODE_SIGN_ENTITLEMENTS: BroadcastUpload/BroadcastUpload.entitlements
+        SWIFT_STRICT_CONCURRENCY: complete

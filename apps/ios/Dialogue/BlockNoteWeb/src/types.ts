@@ -1,0 +1,77 @@
+// Type declarations for the Swift ↔ JS bridge
+
+declare global {
+  interface Window {
+    /** Initial theme injected by Swift before React renders, prevents flash */
+    initialTheme?: "light" | "dark";
+
+    /** API key injected by Swift from Keychain (in-memory only) */
+    AI_API_KEY?: string;
+
+    /** AI endpoint URL, defaults to OpenAI-compatible */
+    AI_ENDPOINT?: string;
+
+    /** Editor instance exposed for Swift to call methods */
+    blocknoteEditor?: any;
+
+    /** Called by Swift to load a document's blocks */
+    loadDocument?: (blocks: any[]) => void;
+
+    /** Called by Swift to set the editor theme */
+    setTheme?: (theme: "light" | "dark") => void;
+
+    /** Called by Swift to export blocks to Markdown */
+    exportMarkdown?: (blocksJSON: string) => Promise<string>;
+
+    /** Called by Swift to export blocks to interoperable HTML */
+    exportHTML?: (blocksJSON: string) => Promise<string>;
+
+    /** Called by Swift to export blocks to full BlockNote HTML */
+    exportFullHTML?: (blocksJSON: string) => Promise<string>;
+
+    /** Called by Swift to insert text at the current cursor position (voice dictation) */
+    insertTextAtCursor?: (text: string) => void;
+
+    /** Called by Swift to check if the editor currently has focus */
+    editorHasFocus?: () => boolean;
+
+    /** Called by Swift to get the currently selected text (empty if no selection) */
+    getSelectedText?: () => string;
+
+    /** Called by Swift to parse markdown and load it into the editor */
+    loadMarkdown?: (markdown: string) => Promise<void>;
+
+    /** Called by Swift to dispatch a streamed AI chunk */
+    dispatchAIChunk?: (data: {
+      requestId: string;
+      chunk: string;
+      done: boolean;
+    }) => void;
+
+    /** Called by Swift to dispatch an AI error */
+    dispatchAIError?: (data: { requestId: string; error: string }) => void;
+
+    /** WebKit message handler bridge */
+    webkit?: {
+      messageHandlers?: {
+        editorBridge?: {
+          postMessage: (msg: BridgeMessage) => void;
+        };
+      };
+    };
+  }
+}
+
+/** Messages sent from JS to Swift */
+export type BridgeMessage =
+  | { type: "ready" }
+  | { type: "contentChange"; blocksJSON: string; title?: string }
+  | { type: "titleChange"; title: string }
+  | {
+      type: "aiRequest";
+      requestId: string;
+      messages: string;
+      options: string;
+    };
+
+export {};

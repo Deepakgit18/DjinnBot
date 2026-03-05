@@ -1,0 +1,24 @@
+/* iOS mobile formatting toolbar — horizontally scrollable in portrait mode */
+
+/* The fixed-position wrapper from ExperimentalMobileFormattingToolbarController */
+div:has(> .bn-formatting-toolbar)[style*="position: fixed"] {
+  max-width: 100vw !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Hide scrollbar but keep scrollable */
+div:has(> .bn-formatting-toolbar)[style*="position: fixed"]::-webkit-scrollbar {
+  display: none;
+}
+
+/* Prevent the toolbar buttons from wrapping or shrinking */
+.bn-formatting-toolbar {
+  flex-wrap: nowrap !important;
+  overflow: visible !important;
+}
+
+.bn-formatting-toolbar > * {
+  flex-shrink: 0 !important;
+}
