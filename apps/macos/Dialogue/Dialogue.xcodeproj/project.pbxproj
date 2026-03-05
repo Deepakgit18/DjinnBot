@@ -82,6 +82,8 @@
 		QQ000001 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = QQ000011 /* AppIcon.icns */; };
 		VV000001 /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = VV000011 /* PermissionManager.swift */; };
 		VV000002 /* PermissionOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = VV000012 /* PermissionOnboardingView.swift */; };
+		DL000001 /* LogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DL000011 /* LogStore.swift */; };
+		DL000002 /* DebugLogWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = DL000012 /* DebugLogWindow.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -156,6 +158,8 @@
 		MI000012 /* MeetingSummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingSummaryView.swift; sourceTree = "<group>"; };
 		VV000011 /* PermissionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionManager.swift; sourceTree = "<group>"; };
 		VV000012 /* PermissionOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionOnboardingView.swift; sourceTree = "<group>"; };
+		DL000011 /* LogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogStore.swift; sourceTree = "<group>"; };
+		DL000012 /* DebugLogWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogWindow.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -261,6 +265,7 @@
 				UU000014 /* AppUpdater.swift */,
 				MI000011 /* MeetingIngestService.swift */,
 				VV000011 /* PermissionManager.swift */,
+				DL000011 /* LogStore.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -281,6 +286,7 @@
 				UU000013 /* InDocumentSearchOverlay.swift */,
 				MI000012 /* MeetingSummaryView.swift */,
 				VV000012 /* PermissionOnboardingView.swift */,
+				DL000012 /* DebugLogWindow.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
@@ -571,6 +577,8 @@
 				MI000002 /* MeetingSummaryView.swift in Sources */,
 				VV000001 /* PermissionManager.swift in Sources */,
 				VV000002 /* PermissionOnboardingView.swift in Sources */,
+				DL000001 /* LogStore.swift in Sources */,
+				DL000002 /* DebugLogWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

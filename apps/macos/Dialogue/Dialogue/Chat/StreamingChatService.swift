@@ -221,9 +221,14 @@ final class StreamingChatService: @unchecked Sendable {
             }
             request.timeoutInterval = 0 // No timeout for SSE
             
-            let delegate = SSEStreamDelegate { event in
-                continuation.yield(event)
-            }
+            let delegate = SSEStreamDelegate(
+                onEvent: { event in
+                    continuation.yield(event)
+                },
+                onFinish: {
+                    continuation.finish()
+                }
+            )
             
             let sseSession = URLSession(
                 configuration: .default,
@@ -267,12 +272,18 @@ final class StreamingChatService: @unchecked Sendable {
 // MARK: - SSE Stream Delegate
 
 /// URLSession delegate that parses raw SSE bytes into DjinnSSEEvent values.
+///
+/// IMPORTANT: The delegate holds a `finish` closure that MUST be called when the
+/// connection ends (whether from error or clean close). Without this, any
+/// `for await` loop consuming the `AsyncStream` will hang forever.
 private final class SSEStreamDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let onEvent: (DjinnSSEEvent) -> Void
+    private let onFinish: () -> Void
     private var buffer = ""
     
-    init(onEvent: @escaping (DjinnSSEEvent) -> Void) {
+    init(onEvent: @escaping (DjinnSSEEvent) -> Void, onFinish: @escaping () -> Void) {
         self.onEvent = onEvent
+        self.onFinish = onFinish
     }
     
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
@@ -287,12 +298,20 @@ private final class SSEStreamDelegate: NSObject, URLSessionDataDelegate, @unchec
         }
     }
     
+    /// Called when the connection completes — either due to an error or a clean close.
+    /// We MUST call `onFinish()` in all cases so the AsyncStream terminates and
+    /// any `for await` consumer is unblocked.
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error = error {
             // Don't report cancellation as an error
-            if (error as NSError).code == NSURLErrorCancelled { return }
+            if (error as NSError).code == NSURLErrorCancelled {
+                onFinish()
+                return
+            }
             onEvent(.error(message: "SSE connection lost: \(error.localizedDescription)"))
         }
+        // Always finish the stream so consumers aren't stuck waiting forever.
+        onFinish()
     }
     
     private func processSSEMessage(_ message: String) {

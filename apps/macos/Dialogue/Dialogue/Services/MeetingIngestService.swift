@@ -62,6 +62,7 @@ final class MeetingIngestService: ObservableObject {
 
     private let logger = Logger(subsystem: "bot.djinn.app.dialog", category: "MeetingIngest")
     private var currentMeeting: SavedMeeting?
+    private var pipelineTask: Task<Void, Never>?
 
     // MARK: - Load State for a Meeting
 
@@ -111,9 +112,34 @@ final class MeetingIngestService: ObservableObject {
         currentMeeting = meeting
         errorMessage = nil
 
-        Task {
+        // Use a stored task so we can cancel if needed.
+        pipelineTask?.cancel()
+        pipelineTask = Task {
+            // Quick reachability check — fail fast instead of hanging.
+            let service = StreamingChatService.shared
+            guard let probeURL = URL(string: service.baseURL) else {
+                state = .failed
+                errorMessage = "Invalid API endpoint URL. Check Settings."
+                return
+            }
+            do {
+                statusMessage = "Connecting to server..."
+                state = .ingesting
+                var probeReq = URLRequest(url: probeURL)
+                probeReq.httpMethod = "HEAD"
+                probeReq.timeoutInterval = 8
+                _ = try await URLSession.shared.data(for: probeReq)
+            } catch {
+                state = .failed
+                errorMessage = "Cannot reach server: \(error.localizedDescription)"
+                statusMessage = ""
+                logger.error("Server reachability check failed: \(error)")
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+
             // Phase 1: Ingest
-            state = .ingesting
             statusMessage = "Sending transcript to Dialogue AI..."
 
             do {
@@ -126,6 +152,8 @@ final class MeetingIngestService: ObservableObject {
                 return
             }
 
+            guard !Task.isCancelled else { return }
+
             // Mark as ingested on disk
             isIngested = true
             persistIngestMetadata(for: meeting, summaryGenerated: false)
@@ -136,6 +164,9 @@ final class MeetingIngestService: ObservableObject {
 
             do {
                 let markdown = try await requestSummary(meeting: meeting, entries: entries)
+
+                guard !Task.isCancelled else { return }
+
                 statusMessage = "Saving summary..."
 
                 // Save as summary.blocknote
@@ -247,17 +278,34 @@ final class MeetingIngestService: ObservableObject {
         let startResponse = try await service.startSession(agentId: agentId)
         let sessionId = startResponse.sessionId
 
-        // Wait for session to become ready (poll up to 30s)
+        // Wait for session to become ready (poll up to 30s).
+        // Individual poll failures are retried — only consecutive failures cause abort.
         var sessionReady = false
+        var consecutiveErrors = 0
+        let maxConsecutiveErrors = 3
         for _ in 0..<30 {
+            try Task.checkCancellation()
             try await Task.sleep(nanoseconds: 1_000_000_000)
-            let status = try await service.getSessionStatus(agentId: agentId, sessionId: sessionId)
-            if status.status == "running" || status.status == "ready" {
-                sessionReady = true
-                break
-            }
-            if status.status == "failed" {
-                throw IngestError.sessionFailed
+            do {
+                let status = try await service.getSessionStatus(agentId: agentId, sessionId: sessionId)
+                consecutiveErrors = 0
+                if status.status == "running" || status.status == "ready" {
+                    sessionReady = true
+                    break
+                }
+                if status.status == "failed" {
+                    throw IngestError.sessionFailed
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as IngestError {
+                throw error // Re-throw our own errors (sessionFailed)
+            } catch {
+                consecutiveErrors += 1
+                logger.warning("Status poll error (\(consecutiveErrors)/\(maxConsecutiveErrors)): \(error.localizedDescription)")
+                if consecutiveErrors >= maxConsecutiveErrors {
+                    throw IngestError.serverUnreachable
+                }
             }
         }
 
@@ -342,47 +390,66 @@ final class MeetingIngestService: ObservableObject {
 
     /// Connect to the SSE stream and collect the full assistant response.
     /// Updates `statusMessage` with streaming progress so the user sees activity.
+    ///
+    /// Has a 5-minute overall timeout to prevent hanging if the server stalls.
+    /// The SSEStreamDelegate now properly finishes the AsyncStream on connection
+    /// close, but the timeout is a safety net.
     private func collectSSEResponse(sessionId: String, service: StreamingChatService) async throws -> String {
-        var fullText = ""
-        var receivedTurnEnd = false
-        var wordCount = 0
+        // Wrap the SSE collection in a timeout task.
+        let timeoutSeconds: UInt64 = 300 // 5 minutes
+        return try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask { @MainActor [weak self] in
+                var fullText = ""
+                var receivedTurnEnd = false
+                var wordCount = 0
 
-        let stream = service.connectSSE(sessionId: sessionId)
+                let stream = service.connectSSE(sessionId: sessionId)
 
-        for await event in stream {
-            switch event {
-            case .textDelta(let text):
-                fullText += text
-                // Update word count for progress feedback
-                let newWords = text.split(whereSeparator: \.isWhitespace).count
-                wordCount += newWords
-                if wordCount % 10 == 0 || newWords > 0 {
-                    statusMessage = "Generating summary... (\(wordCount) words)"
+                for await event in stream {
+                    try Task.checkCancellation()
+                    switch event {
+                    case .textDelta(let text):
+                        fullText += text
+                        let newWords = text.split(whereSeparator: \.isWhitespace).count
+                        wordCount += newWords
+                        if wordCount % 10 == 0 || newWords > 0 {
+                            self?.statusMessage = "Generating summary... (\(wordCount) words)"
+                        }
+
+                    case .turnEnd:
+                        receivedTurnEnd = true
+
+                    case .sessionComplete:
+                        receivedTurnEnd = true
+
+                    case .error(let message):
+                        throw IngestError.sseError(message)
+
+                    case .responseAborted:
+                        throw IngestError.responseAborted
+
+                    default:
+                        break
+                    }
+
+                    if receivedTurnEnd { break }
                 }
 
-            case .turnEnd:
-                receivedTurnEnd = true
-
-            case .sessionComplete:
-                receivedTurnEnd = true
-
-            case .error(let message):
-                throw IngestError.sseError(message)
-
-            case .responseAborted:
-                throw IngestError.responseAborted
-
-            default:
-                break
+                service.disconnectSSE()
+                return fullText
             }
 
-            if receivedTurnEnd { break }
+            // Timeout task
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
+                throw IngestError.summaryTimeout
+            }
+
+            // Return whichever finishes first; cancel the other.
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
         }
-
-        // Disconnect SSE after collecting
-        service.disconnectSSE()
-
-        return fullText
     }
 
     // MARK: - Save Summary as BlockNote
@@ -450,8 +517,10 @@ final class MeetingIngestService: ObservableObject {
         case invalidURL
         case invalidResponse
         case httpError(statusCode: Int, body: String)
+        case serverUnreachable
         case sessionFailed
         case sessionTimeout
+        case summaryTimeout
         case emptySummary
         case sseError(String)
         case responseAborted
@@ -468,10 +537,14 @@ final class MeetingIngestService: ObservableObject {
                 if code == 401 { return "Unauthorized (401) — check your API key" }
                 if code == 404 { return "Endpoint not found (404) — check your server URL" }
                 return "HTTP \(code): \(body.prefix(200))"
+            case .serverUnreachable:
+                return "Server is not responding. Check that the Djinn server is running."
             case .sessionFailed:
                 return "Chat session failed to start"
             case .sessionTimeout:
                 return "Chat session timed out waiting to become ready"
+            case .summaryTimeout:
+                return "Summary generation timed out after 5 minutes"
             case .emptySummary:
                 return "The AI returned an empty summary"
             case .sseError(let msg):

@@ -147,18 +147,27 @@ final class VoiceEnrollmentManager: ObservableObject {
         guard state == .idle || isErrorState || state == .silenceDetected else { return }
         collectedClips.removeAll()
         clipCount = 0
+        LogStore.shared.log("Voice enrollment prepare() called (state: \(String(describing: state)))", category: .voiceEnrollment)
 
         // Refresh available input devices
         refreshDevices()
+        LogStore.shared.log("Available input devices: \(availableDevices.map(\.name).joined(separator: ", "))", category: .voiceEnrollment)
+        if let selected = selectedDevice {
+            LogStore.shared.log("Selected device: \(selected.name) (ID: \(selected.audioDeviceID))", category: .voiceEnrollment)
+        } else {
+            LogStore.shared.log("Selected device: System Default", category: .voiceEnrollment)
+        }
 
         do {
             try await VoiceID.shared.prepare()
             state = .ready
             startPreview()
             logger.info("VoiceEnrollmentManager ready")
+            LogStore.shared.log("Voice enrollment ready. Starting mic preview.", category: .voiceEnrollment)
         } catch {
             state = .error("Failed to load models: \(error.localizedDescription)")
             logger.error("Enrollment model load failed: \(error.localizedDescription)")
+            LogStore.shared.log("Enrollment model load failed: \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
         }
     }
 
@@ -191,21 +200,28 @@ final class VoiceEnrollmentManager: ObservableObject {
     /// No samples are stored. Runs on the currently selected device.
     private func startPreview() {
         stopPreview()
+        LogStore.shared.log("Starting mic preview (device: \(selectedDevice?.name ?? "system default"))", category: .voiceEnrollment)
 
         let engine = AVAudioEngine()
 
         // Set non-default device if user explicitly picked one
         if let device = selectedDevice, !isSystemDefault(device) {
-            if !AudioInputDeviceManager.setInputDevice(device, on: engine) {
+            let success = AudioInputDeviceManager.setInputDevice(device, on: engine)
+            if !success {
                 logger.warning("Preview: failed to set device \(device.name), using system default")
+                LogStore.shared.log("Preview: failed to set input device '\(device.name)' (ID: \(device.audioDeviceID)), falling back to system default", category: .voiceEnrollment, level: .warning)
+            } else {
+                LogStore.shared.log("Preview: set input device to '\(device.name)' (ID: \(device.audioDeviceID))", category: .voiceEnrollment)
             }
         }
 
         let inputNode = engine.inputNode
         let hwFormat = inputNode.inputFormat(forBus: 0)
+        LogStore.shared.log("Preview input format: \(hwFormat.sampleRate)Hz, \(hwFormat.channelCount)ch", category: .voiceEnrollment)
 
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
             logger.warning("Preview: no valid format from input node")
+            LogStore.shared.log("Preview: INVALID format from input node (sampleRate=\(hwFormat.sampleRate), channels=\(hwFormat.channelCount)). No mic available.", category: .voiceEnrollment, level: .error)
             return
         }
 
@@ -223,14 +239,17 @@ final class VoiceEnrollmentManager: ObservableObject {
             try engine.start()
             previewEngine = engine
             logger.info("Mic preview started (device: \(self.selectedDevice?.name ?? "system default"))")
+            LogStore.shared.log("Mic preview engine started (isRunning: \(engine.isRunning))", category: .voiceEnrollment)
         } catch {
             logger.error("Preview: failed to start engine: \(error.localizedDescription)")
+            LogStore.shared.log("Preview: failed to start engine: \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
         }
     }
 
     /// Stop the preview engine.
     private func stopPreview() {
         guard let engine = previewEngine else { return }
+        LogStore.shared.log("Stopping mic preview engine", category: .voiceEnrollment)
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         previewEngine = nil
@@ -285,11 +304,15 @@ final class VoiceEnrollmentManager: ObservableObject {
         case .silenceDetected: break
         default: return
         }
+        LogStore.shared.log("Enrollment startRecording() called (clip \(clipCount + 1)/\(requiredClipCount))", category: .voiceEnrollment)
 
         // Verify microphone permission before starting.
         PermissionManager.shared.checkMicrophone()
-        guard PermissionManager.shared.microphoneStatus == .granted else {
+        let micStatus = PermissionManager.shared.microphoneStatus
+        LogStore.shared.log("Microphone permission: \(String(describing: micStatus))", category: .voiceEnrollment)
+        guard micStatus == .granted else {
             state = .error("Microphone access is required. Open System Settings > Privacy & Security > Microphone.")
+            LogStore.shared.log("Microphone not authorized for enrollment", category: .voiceEnrollment, level: .error)
             return
         }
 
@@ -306,22 +329,33 @@ final class VoiceEnrollmentManager: ObservableObject {
 
         // Set non-default device if user explicitly picked one
         if let device = selectedDevice, !isSystemDefault(device) {
-            if !AudioInputDeviceManager.setInputDevice(device, on: engine) {
+            let success = AudioInputDeviceManager.setInputDevice(device, on: engine)
+            if !success {
                 logger.warning("Failed to set input device \(device.name), using system default")
+                LogStore.shared.log("Failed to set recording input device '\(device.name)' (ID: \(device.audioDeviceID))", category: .voiceEnrollment, level: .warning)
+            } else {
+                LogStore.shared.log("Recording input device set to '\(device.name)' (ID: \(device.audioDeviceID))", category: .voiceEnrollment)
             }
+        } else {
+            LogStore.shared.log("Using system default input device for recording", category: .voiceEnrollment)
         }
 
         let inputNode = engine.inputNode
         let hwFormat = inputNode.inputFormat(forBus: 0)
+        LogStore.shared.log("Recording engine input format: \(hwFormat.sampleRate)Hz, \(hwFormat.channelCount)ch, commonFormat=\(hwFormat.commonFormat.rawValue)", category: .voiceEnrollment)
 
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
             state = .error("No microphone available. Check System Settings > Sound > Input.")
+            LogStore.shared.log("INVALID recording input format — no microphone available (sampleRate=\(hwFormat.sampleRate), channels=\(hwFormat.channelCount))", category: .voiceEnrollment, level: .error)
             return
         }
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, _ in
             guard let self else { return }
-            guard let converted = MeetingAudioConverter.convertTo16kMono(buffer) else { return }
+            guard let converted = MeetingAudioConverter.convertTo16kMono(buffer) else {
+                LogStore.shared.log("Enrollment: failed to convert audio buffer to 16kHz mono", category: .voiceEnrollment, level: .warning)
+                return
+            }
             let samples = MeetingAudioConverter.toFloatArray(converted)
             let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
 
@@ -330,6 +364,7 @@ final class VoiceEnrollmentManager: ObservableObject {
                 self.peakLevel = peak
             }
         }
+        LogStore.shared.log("Recording tap installed on input node (bufferSize: 4096)", category: .voiceEnrollment)
 
         engine.prepare()
         do {
@@ -351,8 +386,10 @@ final class VoiceEnrollmentManager: ObservableObject {
             }
 
             logger.info("Enrollment clip \(self.clipCount + 1)/\(self.requiredClipCount) recording started (device: \(self.selectedDevice?.name ?? "system default"))")
+            LogStore.shared.log("Enrollment recording engine started (isRunning: \(engine.isRunning), clip \(clipCount + 1)/\(requiredClipCount))", category: .voiceEnrollment)
         } catch {
             state = .error("Failed to start microphone: \(error.localizedDescription)")
+            LogStore.shared.log("Failed to start enrollment recording engine: \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
             // Restart preview since recording failed
             startPreview()
         }
@@ -386,6 +423,7 @@ final class VoiceEnrollmentManager: ObservableObject {
 
     /// Stop recording due to silence and transition to the silenceDetected state.
     private func autoStopForSilence() {
+        LogStore.shared.log("Auto-stopping enrollment recording due to silence (\(String(format: "%.1f", silenceAutoStopDelay))s of silence detected)", category: .voiceEnrollment, level: .warning)
         durationTimer?.invalidate()
         durationTimer = nil
 
@@ -400,6 +438,7 @@ final class VoiceEnrollmentManager: ObservableObject {
         silenceWarningActive = false
 
         state = .silenceDetected
+        LogStore.shared.log("Transitioned to silenceDetected state. Restarting preview.", category: .voiceEnrollment)
 
         // Restart preview so user can see if changing mic fixes things
         startPreview()
@@ -410,6 +449,7 @@ final class VoiceEnrollmentManager: ObservableObject {
     /// Stores the recorded audio internally. Returns `true` if the clip
     /// was valid and stored, `false` on error.
     func stopRecording() async -> Bool {
+        LogStore.shared.log("Stopping enrollment recording (samples collected: \(recordedSamples.count))", category: .voiceEnrollment)
         durationTimer?.invalidate()
         durationTimer = nil
 
@@ -422,12 +462,14 @@ final class VoiceEnrollmentManager: ObservableObject {
 
         guard !recordedSamples.isEmpty else {
             state = .error("No audio recorded")
+            LogStore.shared.log("Enrollment stopRecording: no audio samples collected", category: .voiceEnrollment, level: .error)
             return false
         }
 
         let durationSec = Double(recordedSamples.count) / 16_000.0
         guard durationSec >= minimumDuration else {
             state = .error("Recording too short (\(String(format: "%.1f", durationSec))s). Need at least \(Int(minimumDuration))s.")
+            LogStore.shared.log("Enrollment clip too short: \(String(format: "%.1f", durationSec))s (minimum: \(minimumDuration)s)", category: .voiceEnrollment, level: .warning)
             return false
         }
 
@@ -436,6 +478,7 @@ final class VoiceEnrollmentManager: ObservableObject {
         clipCount = collectedClips.count
 
         logger.info("Clip \(self.clipCount)/\(self.requiredClipCount) recorded (\(String(format: "%.1f", durationSec))s)")
+        LogStore.shared.log("Enrollment clip \(clipCount)/\(requiredClipCount) stored (\(String(format: "%.1f", durationSec))s, \(recordedSamples.count) samples)", category: .voiceEnrollment)
 
         state = .ready
 
@@ -480,16 +523,19 @@ final class VoiceEnrollmentManager: ObservableObject {
 
         stopPreview()
         state = .processing
+        LogStore.shared.log("Processing voice enrollment for '\(trimmedName)' (\(collectedClips.count) clips)", category: .voiceEnrollment)
 
         do {
             let userID = trimmedName.lowercased().replacingOccurrences(of: " ", with: "_")
             try await VoiceID.shared.enroll(userID: userID, audioClips: collectedClips, colorIndex: colorIndex)
             state = .done(profileName: trimmedName)
             logger.info("Enrolled '\(trimmedName)' from \(self.collectedClips.count) clips")
+            LogStore.shared.log("Voice enrollment successful for '\(trimmedName)' (userID: \(userID))", category: .voiceEnrollment)
             return true
         } catch {
             state = .error("Enrollment failed: \(error.localizedDescription)")
             logger.error("Enrollment failed: \(error.localizedDescription)")
+            LogStore.shared.log("Voice enrollment failed for '\(trimmedName)': \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
             return false
         }
     }

@@ -87,14 +87,18 @@ final class MeetingRecorderController: ObservableObject {
         isStarting = true
         preparationStatus = "Checking permissions…"
         errorMessage = nil
+        LogStore.shared.log("Recording start requested", category: .recording)
 
         // Verify required permissions before starting.
         await PermissionManager.shared.refreshAll()
-        guard PermissionManager.shared.microphoneStatus == .granted else {
+        let micStatus = PermissionManager.shared.microphoneStatus
+        LogStore.shared.log("Microphone permission status: \(String(describing: micStatus))", category: .recording)
+        guard micStatus == .granted else {
             isStarting = false
             preparationStatus = nil
             errorMessage = "Microphone access is required. Open System Settings > Privacy & Security > Microphone."
             logger.error("Cannot start recording: microphone not authorized")
+            LogStore.shared.log("Cannot start recording: microphone not authorized (status: \(String(describing: micStatus)))", category: .recording, level: .error)
             return
         }
 
@@ -107,6 +111,7 @@ final class MeetingRecorderController: ObservableObject {
             detectedMeetingApps = appNames.isEmpty ? "None (mic only)" : appNames.joined(separator: ", ")
 
             logger.info("Starting recording. Detected apps: \(self.detectedMeetingApps), mode: \(self.diarizationMode.rawValue)")
+            LogStore.shared.log("Detected apps: \(detectedMeetingApps), diarization mode: \(diarizationMode.rawValue)", category: .recording)
 
             // Reset merge engine for fresh recording
             preparationStatus = "Preparing pipelines…"
@@ -141,11 +146,13 @@ final class MeetingRecorderController: ObservableObject {
             isStarting = false
             preparationStatus = nil
             logger.info("Recording started")
+            LogStore.shared.log("Recording started successfully", category: .recording)
 
         } catch {
             isStarting = false
             preparationStatus = nil
             logger.error("Failed to start recording: \(error.localizedDescription)")
+            LogStore.shared.log("Failed to start recording: \(error.localizedDescription)", category: .recording, level: .error)
             errorMessage = error.localizedDescription
         }
     }
@@ -167,6 +174,7 @@ final class MeetingRecorderController: ObservableObject {
         isRecording = false
 
         logger.info("Stopping recording")
+        LogStore.shared.log("Stopping recording (duration: \(String(format: "%.1f", recordingDuration))s, segments: \(mergedSegments.count))", category: .recording)
 
         // Stop duration timer
         durationTimer?.invalidate()

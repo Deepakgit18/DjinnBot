@@ -10,6 +10,9 @@ struct DialogueApp: App {
     /// Controls the menubar dropdown presentation.
     @State private var isMenuPresented = false
 
+    /// Controls the debug log window presentation.
+    @Environment(\.openWindow) private var openWindow
+
     var body: some Scene {
         // MARK: - Main Window
 
@@ -23,7 +26,14 @@ struct DialogueApp: App {
                         _ = VoiceCommandManager.shared
                     }
                     AppUpdater.shared.startPeriodicChecks()
+                    LogStore.shared.log("App launched", category: .app)
                 }
+        }
+
+        // MARK: - Debug Log Window
+
+        Window("Debug Logs", id: "debug-logs") {
+            DebugLogWindow()
         }
 
         // MARK: - Menu Bar Extra
@@ -112,6 +122,13 @@ struct DialogueApp: App {
                     NotificationCenter.default.post(name: .openSpeakerProfiles, object: nil)
                 }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
+            }
+
+            CommandGroup(replacing: .help) {
+                Button("Debug Logs") {
+                    openWindow(id: "debug-logs")
+                }
+                .keyboardShortcut("l", modifiers: [.command, .option])
             }
 
             CommandMenu("AI Chat") {
