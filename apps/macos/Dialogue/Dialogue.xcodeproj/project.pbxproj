@@ -84,6 +84,8 @@
 		VV000002 /* PermissionOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = VV000012 /* PermissionOnboardingView.swift */; };
 		DL000001 /* LogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DL000011 /* LogStore.swift */; };
 		DL000002 /* DebugLogWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = DL000012 /* DebugLogWindow.swift */; };
+		AS000001 /* AudioDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = AS000011 /* AudioDevice.swift */; };
+		AS000002 /* AudioInputStreamer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AS000012 /* AudioInputStreamer.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -160,6 +162,8 @@
 		VV000012 /* PermissionOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionOnboardingView.swift; sourceTree = "<group>"; };
 		DL000011 /* LogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogStore.swift; sourceTree = "<group>"; };
 		DL000012 /* DebugLogWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogWindow.swift; sourceTree = "<group>"; };
+		AS000011 /* AudioDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDevice.swift; sourceTree = "<group>"; };
+		AS000012 /* AudioInputStreamer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioInputStreamer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -266,6 +270,8 @@
 				MI000011 /* MeetingIngestService.swift */,
 				VV000011 /* PermissionManager.swift */,
 				DL000011 /* LogStore.swift */,
+				AS000011 /* AudioDevice.swift */,
+				AS000012 /* AudioInputStreamer.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -579,6 +585,8 @@
 				VV000002 /* PermissionOnboardingView.swift in Sources */,
 				DL000001 /* LogStore.swift in Sources */,
 				DL000002 /* DebugLogWindow.swift in Sources */,
+				AS000001 /* AudioDevice.swift in Sources */,
+				AS000002 /* AudioInputStreamer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

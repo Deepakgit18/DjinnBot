@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import CoreAudio
 import Foundation
 import OSLog
@@ -7,18 +8,18 @@ import OSLog
 /// extracts embeddings via `VoiceID`, and saves the averaged result as an
 /// enrolled voice.
 ///
+/// Uses `AudioInputStreamer` (HAL Output Audio Unit) for reliable audio
+/// capture with direct device control, independent of system defaults.
+///
 /// Usage:
-/// 1. Call `prepare()` — no model preloading needed (VoiceID owns the runner).
+/// 1. Call `prepare()` — loads diarizer models and starts device monitoring.
 /// 2. For each of 3 clips:
 ///    a. Call `startRecording()` — user reads the displayed prompt.
 ///    b. Call `stopRecording()` — clip is stored internally.
 /// 3. After 3 clips, call `saveProfile(name:)` to enroll via VoiceID.
 ///
-/// Always uses the system default audio input device. If the user needs to
-/// change their microphone, they should do so in System Settings > Sound.
-///
 /// **Live mic preview**: Whenever the manager is in `.ready` or `.silenceDetected`
-/// state, a lightweight preview engine runs to show live mic levels in the UI.
+/// state, a lightweight preview stream runs to show live mic levels in the UI.
 ///
 /// **Silence detection**: During recording, the manager tracks consecutive
 /// silence duration. If the audio level stays below `silenceThreshold` for
@@ -57,26 +58,34 @@ final class VoiceEnrollmentManager: ObservableObject {
     // MARK: - Input Device Selection
 
     /// Available audio input devices.
-    @Published private(set) var availableDevices: [AudioInputDeviceManager.InputDevice] = []
+    @Published private(set) var availableDevices: [AudioDevice] = []
 
-    /// The current system default input device ID, used to highlight the
-    /// active device in the picker.
-    @Published private(set) var currentDefaultDeviceID: AudioDeviceID?
+    /// The currently selected device ID (used to highlight in the picker).
+    @Published private(set) var currentDeviceID: AudioDeviceID?
 
-    /// Switch the system-wide default input device.
-    /// Our CoreAudio property listener handles restarting the engine.
-    func selectDevice(_ device: AudioInputDeviceManager.InputDevice) {
-        guard device.audioDeviceID != currentDefaultDeviceID else { return }
+    /// Switch the input device directly on the streamer.
+    /// No system default mutation — the HAL Output unit handles it.
+    func selectDevice(_ device: AudioDevice) {
+        guard device.audioDeviceID != currentDeviceID else { return }
         logger.info("User selected input device: \(device.name)")
-        LogStore.shared.log("User switching system default input to '\(device.name)' (ID: \(device.audioDeviceID))", category: .voiceEnrollment)
-        AudioInputDeviceManager.setSystemDefaultInputDevice(device)
-        // currentDefaultDeviceID updates when handleDefaultInputDeviceChanged fires
+        LogStore.shared.log("User switching input to '\(device.name)' (ID: \(device.audioDeviceID))", category: .voiceEnrollment)
+
+        do {
+            try streamer.selectDevice(device)
+            currentDeviceID = device.audioDeviceID
+        } catch {
+            logger.error("Failed to select device \(device.name): \(error.localizedDescription)")
+            LogStore.shared.log("Failed to select device '\(device.name)': \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
+            state = .error("Failed to select device: \(error.localizedDescription)")
+        }
     }
 
-    /// Refresh the list of available input devices and the current default.
+    /// Refresh the list of available input devices and the current selection.
     func refreshDevices() {
-        availableDevices = AudioInputDeviceManager.availableInputDevices()
-        currentDefaultDeviceID = AudioInputDeviceManager.defaultInputDevice()?.audioDeviceID
+        availableDevices = streamer.listInputDevices()
+        if currentDeviceID == nil {
+            currentDeviceID = streamer.currentDevice?.audioDeviceID ?? streamer.defaultInputDevice()?.audioDeviceID
+        }
     }
 
     // MARK: - Silence Detection
@@ -112,16 +121,23 @@ final class VoiceEnrollmentManager: ObservableObject {
 
     private let logger = Logger(subsystem: "bot.djinn.app.dialog", category: "VoiceEnrollment")
 
-    /// Engine used for actual recording (captures samples).
-    private var recordingEngine: AVAudioEngine?
+    /// The AudioInputStreamer that handles all device enumeration, selection,
+    /// and audio capture via a Core Audio HAL Output Audio Unit.
+    private let streamer = AudioInputStreamer()
+
+    /// Subscription for device list changes.
+    private var devicesCancellable: AnyCancellable?
+
+    /// Recorded samples for the current clip (16 kHz mono Float32).
     private var recordedSamples: [Float] = []
     private var recordingStartDate: Date?
     private var durationTimer: Timer?
 
-    /// Lightweight engine used for live mic level preview.
-    /// Runs when not recording so the user can see the level meter respond
-    /// before pressing record.
-    private var previewEngine: AVAudioEngine?
+    /// Task that consumes the audio stream during recording.
+    private var recordingStreamTask: Task<Void, Never>?
+
+    /// Task that consumes the audio stream during preview (level only).
+    private var previewStreamTask: Task<Void, Never>?
 
     /// Collected audio clips (16 kHz mono Float32) from each recording round.
     private var collectedClips: [[Float]] = []
@@ -139,146 +155,6 @@ final class VoiceEnrollmentManager: ObservableObject {
         }
     }
 
-    /// Observer token for `AVAudioEngineConfigurationChange` on the preview engine.
-    private var previewConfigObserver: NSObjectProtocol?
-    /// Observer token for `AVAudioEngineConfigurationChange` on the recording engine.
-    private var recordingConfigObserver: NSObjectProtocol?
-
-    /// Whether we're currently handling a device change to prevent re-entrancy.
-    private var isHandlingDeviceChange = false
-
-    /// The CoreAudio property listener block, stored so we can remove it later.
-    /// Must be the exact same block reference for add/remove.
-    private nonisolated(unsafe) var deviceChangeListenerBlock: AudioObjectPropertyListenerBlock?
-
-    // MARK: - Default Device Change Observation
-
-    /// Start observing the system default input device via CoreAudio.
-    /// When the user switches their mic in System Settings, we get a callback
-    /// and can restart the active engine on the new device.
-    private func startObservingDefaultDevice() {
-        // Remove any existing listener first
-        stopObservingDefaultDevice()
-
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor in
-                self?.handleDefaultInputDeviceChanged()
-            }
-        }
-        deviceChangeListenerBlock = block
-
-        let status = AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            DispatchQueue.main,
-            block
-        )
-
-        if status != noErr {
-            logger.error("Failed to add default input device listener: OSStatus \(status)")
-        } else {
-            logger.info("Observing default input device changes")
-        }
-    }
-
-    /// Stop observing the system default input device.
-    private func stopObservingDefaultDevice() {
-        guard let block = deviceChangeListenerBlock else { return }
-
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        AudioObjectRemovePropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            DispatchQueue.main,
-            block
-        )
-        deviceChangeListenerBlock = nil
-    }
-
-    /// Called when the system default input device changes.
-    /// Tears down the old engine immediately, then schedules a delayed
-    /// restart to give CoreAudio time to finish its internal cleanup.
-    private func handleDefaultInputDeviceChanged() {
-        guard !isHandlingDeviceChange else { return }
-        isHandlingDeviceChange = true
-
-        // Update the published device list and current default
-        refreshDevices()
-
-        let deviceName = AudioInputDeviceManager.defaultInputDevice()?.name ?? "unknown"
-        logger.info("Default input device changed to: \(deviceName)")
-        LogStore.shared.log("Default input device changed to '\(deviceName)'. Will restart engine after delay.", category: .voiceEnrollment)
-
-        let wasRecording: Bool
-        switch state {
-        case .recording:
-            wasRecording = true
-            // Tear down old engine immediately (samples are preserved)
-            stopRecordingEngine()
-        case .ready, .silenceDetected:
-            wasRecording = false
-            stopPreview()
-        default:
-            isHandlingDeviceChange = false
-            return
-        }
-
-        // Delay restart to let CoreAudio finish tearing down the old device.
-        // Without this, creating a new AVAudioEngine immediately can hit
-        // stale device state and deadlock or throw errors.
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard let self else { return }
-            self.isHandlingDeviceChange = false
-
-            if wasRecording {
-                self.restartRecordingEngine()
-            } else if self.shouldPreview || self.state == .ready {
-                self.startPreview()
-            }
-        }
-    }
-
-    /// Called when an `AVAudioEngine` posts a configuration change notification.
-    /// This fires when the engine's I/O unit detects a channel count or sample
-    /// rate change. The engine has already stopped itself at this point.
-    private func handleEngineConfigChange(isRecordingEngine: Bool) {
-        guard !isHandlingDeviceChange else { return }
-        isHandlingDeviceChange = true
-
-        logger.info("AVAudioEngine config change (recording=\(isRecordingEngine))")
-        LogStore.shared.log("AVAudioEngine configuration changed (isRecording=\(isRecordingEngine)). Will restart engine after delay.", category: .voiceEnrollment)
-
-        if isRecordingEngine {
-            stopRecordingEngine()
-        } else {
-            stopPreview()
-        }
-
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard let self else { return }
-            self.isHandlingDeviceChange = false
-
-            if isRecordingEngine {
-                self.restartRecordingEngine()
-            } else if self.shouldPreview || self.state == .ready {
-                self.startPreview()
-            }
-        }
-    }
-
     // MARK: - Lifecycle
 
     /// Prepare for enrollment by ensuring VoiceID's diarizer models
@@ -290,7 +166,7 @@ final class VoiceEnrollmentManager: ObservableObject {
         LogStore.shared.log("Voice enrollment prepare() called (state: \(String(describing: state)))", category: .voiceEnrollment)
 
         refreshDevices()
-        startObservingDefaultDevice()
+        setupDeviceListener()
 
         do {
             try await VoiceID.shared.prepare()
@@ -310,109 +186,86 @@ final class VoiceEnrollmentManager: ObservableObject {
         return false
     }
 
+    // MARK: - Device Change Listener
+
+    /// Subscribe to device list changes from the AudioInputStreamer.
+    private func setupDeviceListener() {
+        devicesCancellable?.cancel()
+        devicesCancellable = streamer.devicesPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] devices in
+                guard let self else { return }
+                self.availableDevices = devices
+                self.currentDeviceID = self.streamer.currentDevice?.audioDeviceID
+                self.logger.info("Device list updated: \(devices.count) input device(s)")
+                LogStore.shared.log("Device list updated: \(devices.count) input device(s)", category: .voiceEnrollment)
+            }
+    }
+
     // MARK: - Mic Preview
 
-    /// Start a lightweight mic tap for level monitoring only.
-    /// No samples are stored. Runs on the system default input device.
+    /// Start a lightweight audio stream for level monitoring only.
+    /// No samples are stored. Uses the AudioInputStreamer.
     private func startPreview() {
         stopPreview()
-        LogStore.shared.log("Starting mic preview (system default device)", category: .voiceEnrollment)
+        LogStore.shared.log("Starting mic preview via AudioInputStreamer", category: .voiceEnrollment)
 
-        let engine = AVAudioEngine()
-
-        let inputNode = engine.inputNode
-        let hwFormat = inputNode.inputFormat(forBus: 0)
-        LogStore.shared.log("Preview input format: \(hwFormat.sampleRate)Hz, \(hwFormat.channelCount)ch", category: .voiceEnrollment)
-
-        guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
-            logger.warning("Preview: no valid format from input node")
-            LogStore.shared.log("Preview: INVALID format from input node (sampleRate=\(hwFormat.sampleRate), channels=\(hwFormat.channelCount)). No mic available.", category: .voiceEnrollment, level: .error)
-            return
-        }
-
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, _ in
-            guard let self else { return }
-            // Compute peak from raw buffer (no conversion needed for just levels)
-            let peak = Self.peakFromBuffer(buffer)
-            Task { @MainActor in
-                self.peakLevel = peak
+        // Select default device if none selected
+        if streamer.currentDevice == nil {
+            if let defaultDevice = streamer.defaultInputDevice() {
+                do {
+                    try streamer.selectDevice(defaultDevice)
+                    currentDeviceID = defaultDevice.audioDeviceID
+                } catch {
+                    logger.warning("Preview: failed to select default device: \(error.localizedDescription)")
+                    LogStore.shared.log("Preview: failed to select default device: \(error.localizedDescription)", category: .voiceEnrollment, level: .warning)
+                    return
+                }
+            } else {
+                logger.warning("Preview: no input device available")
+                LogStore.shared.log("Preview: no input device available", category: .voiceEnrollment, level: .warning)
+                return
             }
         }
 
-        engine.prepare()
         do {
-            try engine.start()
-            previewEngine = engine
-
-            // Observe config changes (device switches, format changes)
-            previewConfigObserver = NotificationCenter.default.addObserver(
-                forName: .AVAudioEngineConfigurationChange,
-                object: engine,
-                queue: nil
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.handleEngineConfigChange(isRecordingEngine: false)
+            let stream = try streamer.start(sampleRate: 16_000)
+            previewStreamTask = Task { [weak self] in
+                for await buffer in stream {
+                    guard let self, !Task.isCancelled else { break }
+                    let peak = Self.peakFromPCMBuffer(buffer)
+                    await MainActor.run {
+                        self.peakLevel = peak
+                    }
                 }
             }
-
-            logger.info("Mic preview started (system default device)")
-            LogStore.shared.log("Mic preview engine started (isRunning: \(engine.isRunning))", category: .voiceEnrollment)
+            LogStore.shared.log("Mic preview started via AudioInputStreamer", category: .voiceEnrollment)
         } catch {
-            logger.error("Preview: failed to start engine: \(error.localizedDescription)")
-            LogStore.shared.log("Preview: failed to start engine: \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
+            logger.error("Preview: failed to start stream: \(error.localizedDescription)")
+            LogStore.shared.log("Preview: failed to start stream: \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
         }
     }
 
-    /// Stop the preview engine.
-    /// Safe to call even if the engine was already stopped by CoreAudio
-    /// (e.g. during a device change).
+    /// Stop the preview stream.
     private func stopPreview() {
-        if let observer = previewConfigObserver {
-            NotificationCenter.default.removeObserver(observer)
-            previewConfigObserver = nil
-        }
-        guard let engine = previewEngine else { return }
-        LogStore.shared.log("Stopping mic preview engine (isRunning: \(engine.isRunning))", category: .voiceEnrollment)
-        // Only call stop() if still running — calling stop() on an engine
-        // whose device was yanked by CoreAudio can deadlock.
-        if engine.isRunning {
-            engine.stop()
-        }
-        engine.inputNode.removeTap(onBus: 0)
-        previewEngine = nil
+        previewStreamTask?.cancel()
+        previewStreamTask = nil
+        streamer.stop()
         peakLevel = 0
     }
 
-    /// Tear down and restart the preview on the current device.
-    private func restartPreview() {
-        stopPreview()
-        startPreview()
-    }
-
-    /// Compute peak amplitude from a buffer without conversion.
-    /// Handles float32 (AVAudioEngine mic tap) and int16 (SCStream) formats.
-    private static func peakFromBuffer(_ buffer: AVAudioPCMBuffer) -> Float {
-        if let floatData = buffer.floatChannelData {
-            let count = Int(buffer.frameLength)
-            guard count > 0 else { return 0 }
-            var peak: Float = 0
-            for i in 0..<count {
-                let val = abs(floatData[0][i])
-                if val > peak { peak = val }
-            }
-            return peak
+    /// Compute peak amplitude from a mono Float32 PCM buffer.
+    private static func peakFromPCMBuffer(_ buffer: AVAudioPCMBuffer) -> Float {
+        guard let floatData = buffer.floatChannelData else { return 0 }
+        let count = Int(buffer.frameLength)
+        guard count > 0 else { return 0 }
+        var peak: Float = 0
+        let samples = floatData[0]
+        for i in 0..<count {
+            let val = abs(samples[i])
+            if val > peak { peak = val }
         }
-        if let int16Data = buffer.int16ChannelData {
-            let count = Int(buffer.frameLength)
-            guard count > 0 else { return 0 }
-            var peak: Int16 = 0
-            for i in 0..<count {
-                let val = abs(int16Data[0][i])
-                if val > peak { peak = val }
-            }
-            return Float(peak) / Float(Int16.max)
-        }
-        return 0
+        return peak
     }
 
     // MARK: - Recording
@@ -437,7 +290,7 @@ final class VoiceEnrollmentManager: ObservableObject {
             return
         }
 
-        // Stop preview — we'll use a dedicated recording engine
+        // Stop preview — we'll start a dedicated recording stream
         stopPreview()
 
         recordedSamples.removeAll()
@@ -446,174 +299,62 @@ final class VoiceEnrollmentManager: ObservableObject {
         continuousSilenceDuration = 0
         silenceWarningActive = false
 
-        let engine = AVAudioEngine()
-        LogStore.shared.log("Using system default input device for recording", category: .voiceEnrollment)
-
-        let inputNode = engine.inputNode
-        let hwFormat = inputNode.inputFormat(forBus: 0)
-        LogStore.shared.log("Recording engine input format: \(hwFormat.sampleRate)Hz, \(hwFormat.channelCount)ch, commonFormat=\(hwFormat.commonFormat.rawValue)", category: .voiceEnrollment)
-
-        guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
-            state = .error("No microphone available. Check System Settings > Sound > Input.")
-            LogStore.shared.log("INVALID recording input format — no microphone available (sampleRate=\(hwFormat.sampleRate), channels=\(hwFormat.channelCount))", category: .voiceEnrollment, level: .error)
-            return
-        }
-
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, _ in
-            guard let self else { return }
-            guard let converted = MeetingAudioConverter.convertTo16kMono(buffer) else {
-                LogStore.shared.log("Enrollment: failed to convert audio buffer to 16kHz mono", category: .voiceEnrollment, level: .warning)
+        // Select default device if none selected
+        if streamer.currentDevice == nil {
+            if let defaultDevice = streamer.defaultInputDevice() {
+                do {
+                    try streamer.selectDevice(defaultDevice)
+                    currentDeviceID = defaultDevice.audioDeviceID
+                } catch {
+                    state = .error("Failed to select input device: \(error.localizedDescription)")
+                    LogStore.shared.log("Failed to select default device for recording: \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
+                    startPreview()
+                    return
+                }
+            } else {
+                state = .error("No microphone available. Check System Settings > Sound > Input.")
+                LogStore.shared.log("No input device available for recording", category: .voiceEnrollment, level: .error)
+                startPreview()
                 return
             }
-            let samples = MeetingAudioConverter.toFloatArray(converted)
-            let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
-
-            Task { @MainActor in
-                self.recordedSamples.append(contentsOf: samples)
-                self.peakLevel = peak
-            }
         }
-        LogStore.shared.log("Recording tap installed on input node (bufferSize: 4096)", category: .voiceEnrollment)
 
-        engine.prepare()
         do {
-            try engine.start()
-            self.recordingEngine = engine
+            let stream = try streamer.start(sampleRate: 16_000)
             recordingStartDate = Date()
             state = .recording(duration: 0)
 
+            // Consume the stream — store samples and compute peak
+            recordingStreamTask = Task { [weak self] in
+                for await buffer in stream {
+                    guard let self, !Task.isCancelled else { break }
+                    let samples = Self.toFloatArray(buffer)
+                    let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
+
+                    await MainActor.run {
+                        self.recordedSamples.append(contentsOf: samples)
+                        self.peakLevel = peak
+                    }
+                }
+            }
+
+            // Duration timer for UI updates and silence detection
             durationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     guard let self, let start = self.recordingStartDate else { return }
                     let elapsed = Date().timeIntervalSince(start)
                     self.recordingDuration = elapsed
                     self.state = .recording(duration: elapsed)
-
-                    // Silence detection
                     self.updateSilenceTracking()
                 }
             }
 
-            // Observe config changes (device switches, format changes)
-            recordingConfigObserver = NotificationCenter.default.addObserver(
-                forName: .AVAudioEngineConfigurationChange,
-                object: engine,
-                queue: nil
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.handleEngineConfigChange(isRecordingEngine: true)
-                }
-            }
-
-            logger.info("Enrollment clip \(self.clipCount + 1)/\(self.requiredClipCount) recording started (system default device)")
-            LogStore.shared.log("Enrollment recording engine started (isRunning: \(engine.isRunning), clip \(clipCount + 1)/\(requiredClipCount))", category: .voiceEnrollment)
+            let deviceName = streamer.currentDevice?.name ?? "unknown"
+            logger.info("Enrollment clip \(self.clipCount + 1)/\(self.requiredClipCount) recording started (device: \(deviceName))")
+            LogStore.shared.log("Enrollment recording started (device: \(deviceName), clip \(clipCount + 1)/\(requiredClipCount))", category: .voiceEnrollment)
         } catch {
             state = .error("Failed to start microphone: \(error.localizedDescription)")
-            LogStore.shared.log("Failed to start enrollment recording engine: \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
-            // Restart preview since recording failed
-            startPreview()
-        }
-    }
-
-    // MARK: - Recording Engine Restart
-
-    /// Tear down the current recording engine without discarding collected samples.
-    /// Used when we need to recreate the engine on a new device.
-    /// Safe to call even if the engine was already stopped by CoreAudio.
-    private func stopRecordingEngine() {
-        if let observer = recordingConfigObserver {
-            NotificationCenter.default.removeObserver(observer)
-            recordingConfigObserver = nil
-        }
-        durationTimer?.invalidate()
-        durationTimer = nil
-        if let engine = recordingEngine {
-            // Only call stop() if still running — calling stop() on an engine
-            // whose device was yanked by CoreAudio can deadlock.
-            if engine.isRunning {
-                engine.stop()
-            }
-            engine.inputNode.removeTap(onBus: 0)
-            recordingEngine = nil
-        }
-    }
-
-    /// Restart the recording engine on the new default device.
-    /// Preserves samples already collected (they're already 16kHz mono).
-    /// Picks up the new device's hardware format for the fresh tap.
-    private func restartRecordingEngine() {
-        guard case .recording = state else { return }
-        let samplesBeforeRestart = recordedSamples.count
-        logger.info("Restarting recording engine (preserving \(samplesBeforeRestart) samples)")
-        LogStore.shared.log("Restarting recording engine after device change (\(samplesBeforeRestart) samples preserved)", category: .voiceEnrollment)
-
-        // Tear down old engine (keep samples, keep timer state)
-        stopRecordingEngine()
-
-        // Build a fresh engine on the new default device
-        let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-        let hwFormat = inputNode.inputFormat(forBus: 0)
-        LogStore.shared.log("New recording engine format: \(hwFormat.sampleRate)Hz, \(hwFormat.channelCount)ch", category: .voiceEnrollment)
-
-        guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
-            logger.warning("Recording restart: no valid input format from new device")
-            LogStore.shared.log("Recording restart failed: no valid input format. Transitioning to silenceDetected.", category: .voiceEnrollment, level: .warning)
-            recordedSamples.removeAll()
-            peakLevel = 0
-            state = .silenceDetected
-            startPreview()
-            return
-        }
-
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, _ in
-            guard let self else { return }
-            guard let converted = MeetingAudioConverter.convertTo16kMono(buffer) else { return }
-            let samples = MeetingAudioConverter.toFloatArray(converted)
-            let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
-            Task { @MainActor in
-                self.recordedSamples.append(contentsOf: samples)
-                self.peakLevel = peak
-            }
-        }
-
-        engine.prepare()
-        do {
-            try engine.start()
-            self.recordingEngine = engine
-
-            // Observe config changes on the new engine
-            recordingConfigObserver = NotificationCenter.default.addObserver(
-                forName: .AVAudioEngineConfigurationChange,
-                object: engine,
-                queue: nil
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.handleEngineConfigChange(isRecordingEngine: true)
-                }
-            }
-
-            // Restart the duration timer
-            durationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self, let start = self.recordingStartDate else { return }
-                    let elapsed = Date().timeIntervalSince(start)
-                    self.recordingDuration = elapsed
-                    self.state = .recording(duration: elapsed)
-                    self.updateSilenceTracking()
-                }
-            }
-
-            logger.info("Recording engine restarted on new device")
-            LogStore.shared.log("Recording engine restarted successfully (isRunning: \(engine.isRunning))", category: .voiceEnrollment)
-        } catch {
-            logger.error("Failed to restart recording engine: \(error.localizedDescription)")
-            LogStore.shared.log("Failed to restart recording engine: \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
-            // Fall back to silence detected so user can try again
-            recordedSamples.removeAll()
-            recordingStartDate = nil
-            peakLevel = 0
-            state = .silenceDetected
+            LogStore.shared.log("Failed to start enrollment recording: \(error.localizedDescription)", category: .voiceEnrollment, level: .error)
             startPreview()
         }
     }
@@ -647,8 +388,7 @@ final class VoiceEnrollmentManager: ObservableObject {
     /// Stop recording due to silence and transition to the silenceDetected state.
     private func autoStopForSilence() {
         LogStore.shared.log("Auto-stopping enrollment recording due to silence (\(String(format: "%.1f", silenceAutoStopDelay))s of silence detected)", category: .voiceEnrollment, level: .warning)
-        stopRecordingEngine()
-        recordingStartDate = nil
+        stopRecordingStream()
 
         // Discard the silent recording — don't store it as a clip
         recordedSamples.removeAll()
@@ -662,14 +402,23 @@ final class VoiceEnrollmentManager: ObservableObject {
         startPreview()
     }
 
+    /// Stop the recording stream and timer without discarding samples.
+    private func stopRecordingStream() {
+        durationTimer?.invalidate()
+        durationTimer = nil
+        recordingStreamTask?.cancel()
+        recordingStreamTask = nil
+        streamer.stop()
+        recordingStartDate = nil
+    }
+
     /// Stop recording the current clip.
     ///
     /// Stores the recorded audio internally. Returns `true` if the clip
     /// was valid and stored, `false` on error.
     func stopRecording() async -> Bool {
         LogStore.shared.log("Stopping enrollment recording (samples collected: \(recordedSamples.count))", category: .voiceEnrollment)
-        stopRecordingEngine()
-        recordingStartDate = nil
+        stopRecordingStream()
         silenceWarningActive = false
         continuousSilenceDuration = 0
 
@@ -755,10 +504,9 @@ final class VoiceEnrollmentManager: ObservableObject {
 
     /// Cancel any in-progress recording and return to ready.
     func cancel() {
-        stopRecordingEngine()
+        stopRecordingStream()
         stopPreview()
         recordedSamples.removeAll()
-        recordingStartDate = nil
         recordingDuration = 0
         peakLevel = 0
         continuousSilenceDuration = 0
@@ -770,9 +518,19 @@ final class VoiceEnrollmentManager: ObservableObject {
     func cleanup() {
         cancel()
         stopPreview()
-        stopObservingDefaultDevice()
+        devicesCancellable?.cancel()
+        devicesCancellable = nil
         collectedClips.removeAll()
         clipCount = 0
         state = .idle
+    }
+
+    // MARK: - Helpers
+
+    /// Extract a contiguous [Float] from a mono PCM buffer's first channel.
+    private static func toFloatArray(_ buffer: AVAudioPCMBuffer) -> [Float] {
+        guard let channelData = buffer.floatChannelData else { return [] }
+        let count = Int(buffer.frameLength)
+        return Array(UnsafeBufferPointer(start: channelData[0], count: count))
     }
 }

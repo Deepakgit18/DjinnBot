@@ -144,7 +144,7 @@ struct VoiceEnrollmentSheet: View {
                 .font(.caption)
 
             Picker("Input Device", selection: Binding<AudioDeviceID>(
-                get: { manager.currentDefaultDeviceID ?? 0 },
+                get: { manager.currentDeviceID ?? 0 },
                 set: { newID in
                     if let device = manager.availableDevices.first(where: { $0.audioDeviceID == newID }) {
                         manager.selectDevice(device)
